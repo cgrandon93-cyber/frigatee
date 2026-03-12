@@ -1,11 +1,214 @@
-mqtt:
-  enabled: False
+services:
+  frigate:
+    container_name: frigate
+    privileged: true # this may not be necessary for all setups
+    restart: unless-stopped
+    stop_grace_period: 30s # allow enough time to shut down the various services
+    image: ghcr.io/blakeblackshear/frigate:stable
+    shm_size: "512mb" # Bus error? recalculate shm size
+    devices:
+      - /dev/dri/card0:/dev/dri/card0
+      - /dev/dri/renderD128:/dev/dri/renderD128 # For intel hwaccel, needs to be updated for your hardware
+    volumes:
+      - /etc/localtime:/etc/localtime:ro
+      - ./config:/config
+      - ./storage:/media/frigate
+      - type: tmpfs # Optional: 1GB of memory, reduces SSD/SD Card wear
+        target: /tmp/cache
+        tmpfs:
+          size: 1000000000
+    ports:
+      - "8971:8971"
+      - "5000:5000" # Internal unauthenticated access. Expose carefully.
+      - "8554:8554" # RTSP feeds
+      - "8555:8555/tcp" # WebRTC over tcp
+      - "8555:8555/udp" # WebRTC over udp
+    environment:
+	    FRIGATE_RTSP_PASSWORD: "password"
+      mqtt: # añadir integración MQTT y usuario
+  host: 172.30.32.1:41057
+  user: frigate
+  password: frigate
+  
+ffmpeg:
+  hwaccel_args: preset-vaapi # https://docs.frigate.video/configuration/hardware_acceleration
+
+detectors: # https://docs.frigate.video/configuration/object_detectors
+  ov:
+    type: openvino
+    device: GPU
+
+model:
+  width: 300
+  height: 300
+  input_tensor: nhwc
+  input_pixel_format: bgr
+  path: /openvino-model/ssdlite_mobilenet_v2.xml
+  labelmap_path: /openvino-model/coco_91cl_bkgr.txt
+  # Lista de objetos https://github.com/openvinotoolkit/open_model_zoo/blob/master/data/dataset_classes/coco_91cl_bkgr.txt
+
+record:
+  enabled: True
+  retain:
+    days: 4
+    mode: motion
+  alerts:
+    retain:
+      days: 4
+  detections:
+    retain:
+      days: 4
+
+snapshots: #imagenes
+  enabled: True
+  retain:
+    default: 4
 
 cameras:
-  dummy_camera: # <--- this will be changed to your actual camera later
-    enabled: False
+  Dahua 1:
     ffmpeg:
       inputs:
-        - path: rtsp://127.0.0.1:554/rtsp
+        - path: http://192.168.100.129:10081/
           roles:
             - detect
+            - record
+            - rtmp #protocolo de streaming en vivo
+            
+    detect:
+      width: 1280
+      height: 720
+      fps: 5
+    objects:
+        # “track” son las clases que Frigate extraerá y guardará en la base de datos
+        track:
+          - person
+          - dog
+          - cat
+          - rtmp #protocolo de streaming en vivo
+  dahua2:
+  ffmpeg:
+      inputs:
+        - path: http://192.168.100.129:10082/
+          roles:
+            - detect
+            - record
+            - rtmp
+            
+    detect:
+      width: 1280
+      height: 720
+      fps: 5
+    
+    objects:
+        # “track” son las clases que Frigate extraerá y guardará en la base de datos
+        track:
+          - person
+          - dog
+          - cat
+          - rtmp
+          
+  dahua entrada:
+    ffmpeg:
+      inputs:
+        - path: http://192.168.100.129:10082/
+          roles:
+            - detect
+            - record
+            - rtmp
+            
+    detect:
+      width: 1280
+      height: 720
+      fps: 5
+    
+    objects:
+        # “track” son las clases que Frigate extraerá y guardará en la base de datos
+        track:
+          - person
+          - dog
+          - cat
+
+dahua oficina :
+    ffmpeg:
+      inputs:
+        - path: http://192.168.100.129:10083/
+          roles:
+            - detect
+            - record
+            - rtmp
+            
+    detect:
+      width: 1280
+      height: 720
+      fps: 5
+    
+    objects:
+        # “track” son las clases que Frigate extraerá y guardará en la base de datos
+        track:
+          - person
+          - dog
+
+dahua canil :
+    ffmpeg:
+      inputs:
+        - path: http://192.168.100.129:10084/
+          roles:
+            - detect
+            - record
+            - rtmp
+            
+    detect:
+      width: 1280
+      height: 720
+      fps: 5
+    
+    objects:
+        # “track” son las clases que Frigate extraerá y guardará en la base de datos
+        track:
+          - person
+          - dog
+          - cat
+
+          Dahua tomates:
+    ffmpeg:
+      inputs:
+        - path: http://192.168.100.129:10086/
+          roles:
+            - detect
+            - record
+            - rtmp #protocolo de streaming en vivo
+            
+    detect:
+      width: 1280
+      height: 720
+      fps: 5
+    objects:
+        # “track” son las clases que Frigate extraerá y guardará en la base de datos
+        track:
+          - person
+          - dog
+          - cat
+          - rtmp #protocolo de streaming en vivo 
+
+    Dahua patio:
+    ffmpeg:
+      inputs:
+        - path: http://192.168.100.129:10088/
+          roles:
+            - detect
+            - record
+            - rtmp #protocolo de streaming en vivo
+            
+    detect:
+      width: 1280
+      height: 720
+      fps: 5
+    objects:
+        # “track” son las clases que Frigate extraerá y guardará en la base de datos
+        track:
+          - person
+          - dog
+          - cat
+          - rtmp #protocolo de streaming en vivo  
+          
+          - catversion: 0.15-1
