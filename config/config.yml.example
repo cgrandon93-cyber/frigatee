@@ -1,16 +1,11 @@
 mqtt:
-  host: mqtt
+  enabled: False
 
 cameras:
-  test:
+  dummy_camera: # <--- this will be changed to your actual camera later
+    enabled: False
     ffmpeg:
       inputs:
-        - path: /media/frigate/car-stopping.mp4
-          input_args: -re -stream_loop -1 -fflags +genpts
+        - path: rtsp://127.0.0.1:554/rtsp
           roles:
             - detect
-            - rtmp
-    detect:
-      height: 1080
-      width: 1920
-      fps: 5
