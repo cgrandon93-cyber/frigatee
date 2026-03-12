@@ -18,7 +18,8 @@ services:
     # deploy:
     #       resources:
     #           reservations:
-    #               devices:--device /dev/hailo0
+    #               devices:
+    - /dev/hailo0
     #                   - driver: nvidia
     #                     count: 1
     #                     capabilities: [gpu]
