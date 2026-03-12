@@ -36,6 +36,6 @@ services:
      # - /dev/bus/usb:/dev/bus/usb # Uncomment for Google Coral USB
   mqtt:
   enabled: True
-  host: core-mosquitto
+  host: http://frigate:8971
   user: user
   password: passwd
