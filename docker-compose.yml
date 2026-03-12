@@ -1,27 +1,17 @@
-services:
-  frigate:
-    container_name: frigate
-    privileged: true # this may not be necessary for all setups
-    restart: unless-stopped
-    stop_grace_period: 30s # allow enough time to shut down the various services
-    image: ghcr.io/blakeblackshear/frigate:stable
-    shm_size: "512mb" # Bus error? recalculate shm size
-    devices:
-      - /dev/dri/card0:/dev/dri/card0
-      - /dev/dri/renderD128:/dev/dri/renderD128 # For intel hwaccel, needs to be updated for your hardware
-    volumes:
-      - /etc/localtime:/etc/localtime:ro
-      - ./config:/config
-      - ./storage:/media/frigate
-      - type: tmpfs # Optional: 1GB of memory, reduces SSD/SD Card wear
-        target: /tmp/cache
-        tmpfs:
-          size: 1000000000
-    ports:
-      - "8971:8971"
-      - "5000:5000" # Internal unauthenticated access. Expose carefully.
-      - "8554:8554" # RTSP feeds
-      - "8555:8555/tcp" # WebRTC over tcp
-      - "8555:8555/udp" # WebRTC over udp
-    environment:
-	    FRIGATE_RTSP_PASSWORD: "password"
+docker run -d \
+  --name frigate \
+  --restart=unless-stopped \
+  --stop-timeout 30 \
+  --mount type=tmpfs,target=/tmp/cache,tmpfs-size=1000000000 \
+  --device /dev/bus/usb:/dev/bus/usb \
+  --device /dev/dri/renderD128 \
+  --shm-size=64m \
+  -v /path/to/your/storage:/media/frigate \
+  -v /path/to/your/config:/config \
+  -v /etc/localtime:/etc/localtime:ro \
+  -e FRIGATE_RTSP_PASSWORD='password' \
+  -p 8971:8971 \
+  -p 8554:8554 \
+  -p 8555:8555/tcp \
+  -p 8555:8555/udp \
+  ghcr.io/blakeblackshear/frigate:stable
