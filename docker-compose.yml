@@ -35,8 +35,7 @@ services:
       - ./debug:/media/frigate/recordings
      # - /dev/bus/usb:/dev/bus/usb # Uncomment for Google Coral USB
   mqtt:
-    container_name: mqtt
-    image: eclipse-mosquitto:2.0
-    command: mosquitto -c /mosquitto-no-auth.conf # enable no-auth mode
-    ports:
-      - "8971"
+  enabled: True
+  host: core-mosquitto
+  user: user
+  password: passwd
