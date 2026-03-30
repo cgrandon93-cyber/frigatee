@@ -30,3 +30,13 @@ monitor_docker:
       - state
       - status
       - memory
+media_dir: /media/frigate
+
+record:
+  enabled: false
+  retain:
+    days:
+
+snapshots:
+  retain:
+    default: 2
