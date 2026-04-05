@@ -16,7 +16,9 @@
       "description": "Només es poden revisar temes quan s'han activat les gravacions de la càmera."
     }
   },
-  "timeline": "Línia de temps",
+  "timeline": {
+    "label": "Línia de temps"
+  },
   "timeline.aria": "Seleccionar línia de temps",
   "events": {
     "label": "Esdeveniments",
@@ -82,6 +84,9 @@
     "back": "Enrere",
     "empty": "No hi ha cap vista prèvia disponible",
     "noPreview": "Vista prèvia no disponible",
-    "seekAria": "Cerca el reproductor {{camera}} a {{time}}"
+    "seekAria": "Cerca el reproductor {{camera}} a {{time}}",
+    "filter": "Filtre",
+    "filterDesc": "Seleccioneu àrees per a mostrar només clips amb moviment en aquestes regions.",
+    "filterClear": "Neteja"
   }
 }

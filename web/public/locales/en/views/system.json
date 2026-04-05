@@ -35,7 +35,8 @@
         "cameras_count_other": "{{count}} Cameras"
       },
       "empty": "No messages captured yet",
-      "count": "{{count}} messages",
+      "count_one": "{{count}} message",
+      "count_other": "{{count}} messages",
       "expanded": {
         "payload": "Payload"
       }
@@ -77,6 +78,7 @@
       "gpuUsage": "GPU Usage",
       "gpuMemory": "GPU Memory",
       "gpuEncoder": "GPU Encoder",
+      "gpuCompute": "GPU Compute / Encode",
       "gpuDecoder": "GPU Decoder",
       "gpuTemperature": "GPU Temperature",
       "gpuInfo": {
@@ -135,7 +137,11 @@
     },
     "shm": {
       "title": "SHM (shared memory) allocation",
-      "warning": "The current SHM size of {{total}}MB is too small. Increase it to at least {{min_shm}}MB."
+      "warning": "The current SHM size of {{total}}MB is too small. Increase it to at least {{min_shm}}MB.",
+      "frameLifetime": {
+        "title": "Frame lifetime",
+        "description": "Each camera has {{frames}} frame slots in shared memory. At the fastest camera's frame rate, each frame is available for approximately {{lifetime}}s before being overwritten."
+      }
     },
     "cameraStorage": {
       "title": "Camera Storage",
@@ -183,6 +189,7 @@
       "cameraFfmpeg": "{{camName}} FFmpeg",
       "cameraCapture": "{{camName}} capture",
       "cameraDetect": "{{camName}} detect",
+      "cameraGpu": "{{camName}} GPU",
       "cameraFramesPerSecond": "{{camName}} frames per second",
       "cameraDetectionsPerSecond": "{{camName}} detections per second",
       "cameraSkippedDetectionsPerSecond": "{{camName}} skipped detections per second"

@@ -30,11 +30,11 @@ import useSWR from "swr";
 import { FrigateConfig } from "@/types/frigateConfig";
 import { reviewQueries } from "@/utils/zoneEdutUtil";
 import IconWrapper from "../ui/icon-wrapper";
-import { buttonVariants } from "../ui/button";
 import { Trans, useTranslation } from "react-i18next";
 import ActivityIndicator from "../indicators/activity-indicator";
 import { cn } from "@/lib/utils";
 import { useMotionMaskState, useObjectMaskState, useZoneState } from "@/api/ws";
+import { getProfileColor } from "@/utils/profileColors";
 
 type PolygonItemProps = {
   polygon: Polygon;
@@ -48,6 +48,9 @@ type PolygonItemProps = {
   setIsLoading: (loading: boolean) => void;
   loadingPolygonIndex: number | undefined;
   setLoadingPolygonIndex: (index: number | undefined) => void;
+  editingProfile?: string | null;
+  allProfileNames?: string[];
+  onDeleted?: () => void;
 };
 
 export default function PolygonItem({
@@ -62,6 +65,9 @@ export default function PolygonItem({
   setIsLoading,
   loadingPolygonIndex,
   setLoadingPolygonIndex,
+  editingProfile,
+  allProfileNames,
+  onDeleted,
 }: PolygonItemProps) {
   const { t } = useTranslation("views/settings");
   const { data: config, mutate: updateConfig } =
@@ -107,6 +113,8 @@ export default function PolygonItem({
 
   const PolygonItemIcon = polygon ? polygonTypeIcons[polygon.type] : undefined;
 
+  const isBasePolygon = !!editingProfile && polygon.polygonSource === "base";
+
   const saveToConfig = useCallback(
     async (polygon: Polygon) => {
       if (!polygon || !cameraConfig) {
@@ -122,25 +130,48 @@ export default function PolygonItem({
               ? "objects"
               : polygon.type;
 
+      const updateTopic = editingProfile
+        ? undefined
+        : `config/cameras/${polygon.camera}/${updateTopicType}`;
+
       setIsLoading(true);
       setLoadingPolygonIndex(index);
 
       if (polygon.type === "zone") {
-        // Zones use query string format
-        const { alertQueries, detectionQueries } = reviewQueries(
-          polygon.name,
-          false,
-          false,
-          polygon.camera,
-          cameraConfig?.review.alerts.required_zones || [],
-          cameraConfig?.review.detections.required_zones || [],
-        );
-        const url = `cameras.${polygon.camera}.zones.${polygon.name}${alertQueries}${detectionQueries}`;
+        let url: string;
+
+        if (editingProfile) {
+          // Profile mode: just delete the profile zone
+          url = `cameras.${polygon.camera}.profiles.${editingProfile}.zones.${polygon.name}`;
+        } else {
+          // Base mode: handle review queries
+          const { alertQueries, detectionQueries } = reviewQueries(
+            polygon.name,
+            false,
+            false,
+            polygon.camera,
+            cameraConfig?.review.alerts.required_zones || [],
+            cameraConfig?.review.detections.required_zones || [],
+          );
+          // Also delete from profiles that have overrides for this zone
+          let profileQueries = "";
+          if (allProfileNames && cameraConfig) {
+            for (const profileName of allProfileNames) {
+              if (
+                cameraConfig.profiles?.[profileName]?.zones?.[polygon.name] !==
+                undefined
+              ) {
+                profileQueries += `&cameras.${polygon.camera}.profiles.${profileName}.zones.${polygon.name}`;
+              }
+            }
+          }
+          url = `cameras.${polygon.camera}.zones.${polygon.name}${alertQueries}${detectionQueries}${profileQueries}`;
+        }
 
         await axios
           .put(`config/set?${url}`, {
             requires_restart: 0,
-            update_topic: `config/cameras/${polygon.camera}/${updateTopicType}`,
+            update_topic: updateTopic,
           })
           .then((res) => {
             if (res.status === 200) {
@@ -151,6 +182,7 @@ export default function PolygonItem({
                 { position: "top-center" },
               );
               updateConfig();
+              onDeleted?.();
             } else {
               toast.error(
                 t("toast.save.error.title", {
@@ -178,64 +210,64 @@ export default function PolygonItem({
       }
 
       // Motion masks and object masks use JSON body format
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      let configUpdate: any = {};
-
-      if (polygon.type === "motion_mask") {
-        // Delete mask from motion.mask dict by setting it to undefined
-        configUpdate = {
-          cameras: {
-            [polygon.camera]: {
-              motion: {
-                mask: {
-                  [polygon.name]: null, // Setting to null will delete the key
-                },
-              },
-            },
-          },
-        };
-      }
-
-      if (polygon.type === "object_mask") {
-        // Determine if this is a global mask or object-specific mask
-        const isGlobalMask = !polygon.objects.length;
-
-        if (isGlobalMask) {
-          configUpdate = {
-            cameras: {
-              [polygon.camera]: {
-                objects: {
-                  mask: {
-                    [polygon.name]: null, // Setting to null will delete the key
-                  },
-                },
-              },
-            },
-          };
-        } else {
-          configUpdate = {
-            cameras: {
-              [polygon.camera]: {
+      const deleteSection =
+        polygon.type === "motion_mask"
+          ? { motion: { mask: { [polygon.name]: null } } }
+          : !polygon.objects.length
+            ? { objects: { mask: { [polygon.name]: null } } }
+            : {
                 objects: {
                   filters: {
                     [polygon.objects[0]]: {
-                      mask: {
-                        [polygon.name]: null, // Setting to null will delete the key
-                      },
+                      mask: { [polygon.name]: null },
                     },
                   },
                 },
-              },
-            },
-          };
+              };
+
+      let cameraUpdate: Record<string, unknown>;
+      if (editingProfile) {
+        cameraUpdate = { profiles: { [editingProfile]: deleteSection } };
+      } else {
+        // Base mode: also delete from profiles that have overrides for this mask
+        const profileDeletes: Record<string, unknown> = {};
+        if (allProfileNames && cameraConfig) {
+          for (const profileName of allProfileNames) {
+            const profileData = cameraConfig.profiles?.[profileName];
+            if (!profileData) continue;
+
+            const hasMask =
+              polygon.type === "motion_mask"
+                ? profileData.motion?.mask?.[polygon.name] !== undefined
+                : polygon.type === "object_mask"
+                  ? profileData.objects?.mask?.[polygon.name] !== undefined ||
+                    Object.values(profileData.objects?.filters || {}).some(
+                      (f) => f?.mask?.[polygon.name] !== undefined,
+                    )
+                  : false;
+
+            if (hasMask) {
+              profileDeletes[profileName] = deleteSection;
+            }
+          }
         }
+        cameraUpdate =
+          Object.keys(profileDeletes).length > 0
+            ? { ...deleteSection, profiles: profileDeletes }
+            : deleteSection;
       }
+
+      const configUpdate = {
+        cameras: {
+          [polygon.camera]: cameraUpdate,
+        },
+      };
 
       await axios
         .put("config/set", {
           config_data: configUpdate,
           requires_restart: 0,
-          update_topic: `config/cameras/${polygon.camera}/${updateTopicType}`,
+          update_topic: updateTopic,
         })
         .then((res) => {
           if (res.status === 200) {
@@ -246,6 +278,7 @@ export default function PolygonItem({
               { position: "top-center" },
             );
             updateConfig();
+            onDeleted?.();
           } else {
             toast.error(
               t("toast.save.error.title", {
@@ -278,6 +311,9 @@ export default function PolygonItem({
       setIsLoading,
       index,
       setLoadingPolygonIndex,
+      editingProfile,
+      allProfileNames,
+      onDeleted,
     ],
   );
 
@@ -289,11 +325,16 @@ export default function PolygonItem({
   const handleToggleEnabled = useCallback(
     (e: React.MouseEvent) => {
       e.stopPropagation();
-      // Prevent toggling if disabled in config
-      if (polygon.enabled_in_config === false) {
+      // Prevent toggling if disabled in config or if this is a base polygon in profile mode
+      if (polygon.enabled_in_config === false || isBasePolygon) {
         return;
       }
       if (!polygon) {
+        return;
+      }
+
+      // Don't toggle via WS in profile mode
+      if (editingProfile) {
         return;
       }
 
@@ -320,6 +361,8 @@ export default function PolygonItem({
       sendZoneState,
       sendMotionMaskState,
       sendObjectMaskState,
+      isBasePolygon,
+      editingProfile,
     ],
   );
 
@@ -358,7 +401,12 @@ export default function PolygonItem({
                   <button
                     type="button"
                     onClick={handleToggleEnabled}
-                    disabled={isLoading || polygon.enabled_in_config === false}
+                    disabled={
+                      isLoading ||
+                      polygon.enabled_in_config === false ||
+                      isBasePolygon ||
+                      !!editingProfile
+                    }
                     className="mr-2 shrink-0 cursor-pointer border-none bg-transparent p-0 transition-opacity hover:opacity-70 disabled:cursor-not-allowed disabled:opacity-50"
                   >
                     <PolygonItemIcon
@@ -384,15 +432,37 @@ export default function PolygonItem({
                 </TooltipContent>
               </Tooltip>
             ))}
+          {editingProfile &&
+            (polygon.polygonSource === "profile" ||
+              polygon.polygonSource === "override") &&
+            allProfileNames && (
+              <span
+                className={cn(
+                  "mr-1.5 inline-block h-2 w-2 shrink-0 rounded-full",
+                  getProfileColor(editingProfile, allProfileNames).dot,
+                )}
+              />
+            )}
           <p
             className={cn(
               "cursor-default",
               !isPolygonEnabled && "opacity-60",
               polygon.enabled_in_config === false && "line-through",
+              isBasePolygon && "opacity-50",
             )}
           >
             {polygon.friendly_name ?? polygon.name}
             {!isPolygonEnabled && " (disabled)"}
+            {isBasePolygon && (
+              <span className="ml-1 text-xs text-muted-foreground">
+                {t("masksAndZones.profileBase", { ns: "views/settings" })}
+              </span>
+            )}
+            {polygon.polygonSource === "override" && (
+              <span className="ml-1 text-xs text-muted-foreground">
+                {t("masksAndZones.profileOverride", { ns: "views/settings" })}
+              </span>
+            )}
           </p>
         </div>
         <AlertDialog
@@ -402,32 +472,51 @@ export default function PolygonItem({
           <AlertDialogContent>
             <AlertDialogHeader>
               <AlertDialogTitle>
-                {t("masksAndZones.form.polygonDrawing.delete.title")}
+                {polygon.polygonSource === "override"
+                  ? t("masksAndZones.form.polygonDrawing.revertOverride.title")
+                  : t("masksAndZones.form.polygonDrawing.delete.title")}
               </AlertDialogTitle>
             </AlertDialogHeader>
             <AlertDialogDescription>
-              <Trans
-                ns="views/settings"
-                values={{
-                  type: t(
-                    `masksAndZones.form.polygonDrawing.type.${polygon.type}`,
-                    { ns: "views/settings" },
-                  ),
-                  name: polygon.friendly_name ?? polygon.name,
-                }}
-              >
-                masksAndZones.form.polygonDrawing.delete.desc
-              </Trans>
+              {polygon.polygonSource === "override" ? (
+                <Trans
+                  ns="views/settings"
+                  values={{
+                    type: t(
+                      `masksAndZones.form.polygonDrawing.type.${polygon.type}`,
+                      { ns: "views/settings" },
+                    ),
+                    name: polygon.friendly_name ?? polygon.name,
+                  }}
+                >
+                  masksAndZones.form.polygonDrawing.revertOverride.desc
+                </Trans>
+              ) : (
+                <Trans
+                  ns="views/settings"
+                  values={{
+                    type: t(
+                      `masksAndZones.form.polygonDrawing.type.${polygon.type}`,
+                      { ns: "views/settings" },
+                    ),
+                    name: polygon.friendly_name ?? polygon.name,
+                  }}
+                >
+                  masksAndZones.form.polygonDrawing.delete.desc
+                </Trans>
+              )}
             </AlertDialogDescription>
             <AlertDialogFooter>
               <AlertDialogCancel>
                 {t("button.cancel", { ns: "common" })}
               </AlertDialogCancel>
               <AlertDialogAction
-                className={buttonVariants({ variant: "destructive" })}
+                className="bg-destructive text-white hover:bg-destructive/90"
                 onClick={handleDelete}
               >
-                {t("button.delete", { ns: "common" })}
+                {polygon.polygonSource === "override"
+                  ? t("masksAndZones.form.polygonDrawing.revertOverride.title")
+                  : t("button.delete", { ns: "common" })}
               </AlertDialogAction>
             </AlertDialogFooter>
           </AlertDialogContent>
@@ -459,7 +548,7 @@ export default function PolygonItem({
                 </DropdownMenuItem>
                 <DropdownMenuItem
                   aria-label={t("button.delete", { ns: "common" })}
-                  disabled={isLoading}
+                  disabled={isLoading || isBasePolygon}
                   onClick={() => setDeleteDialogOpen(true)}
                 >
                   {t("button.delete", { ns: "common" })}
@@ -531,13 +620,18 @@ export default function PolygonItem({
                     "size-[15px] cursor-pointer",
                     hoveredPolygonIndex === index &&
                       "fill-primary-variant text-primary-variant",
-                    isLoading && "cursor-not-allowed opacity-50",
+                    (isLoading || isBasePolygon) &&
+                      "cursor-not-allowed opacity-50",
                   )}
-                  onClick={() => !isLoading && setDeleteDialogOpen(true)}
+                  onClick={() =>
+                    !isLoading && !isBasePolygon && setDeleteDialogOpen(true)
+                  }
                 />
               </TooltipTrigger>
               <TooltipContent>
-                {t("button.delete", { ns: "common" })}
+                {polygon.polygonSource === "override"
+                  ? t("masksAndZones.form.polygonDrawing.revertOverride.title")
+                  : t("button.delete", { ns: "common" })}
               </TooltipContent>
             </Tooltip>
           </div>

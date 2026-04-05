@@ -202,15 +202,13 @@ class EmbeddingMaintainer(threading.Thread):
         # post processors
         self.post_processors: list[PostProcessorApi] = []
 
-        if self.genai_manager.vision_client is not None and any(
-            c.review.genai.enabled_in_config for c in self.config.cameras.values()
-        ):
+        if any(c.review.genai.enabled_in_config for c in self.config.cameras.values()):
             self.post_processors.append(
                 ReviewDescriptionProcessor(
                     self.config,
                     self.requestor,
                     self.metrics,
-                    self.genai_manager.vision_client,
+                    self.genai_manager,
                 )
             )
 
@@ -248,16 +246,14 @@ class EmbeddingMaintainer(threading.Thread):
             )
             self.post_processors.append(semantic_trigger_processor)
 
-        if self.genai_manager.vision_client is not None and any(
-            c.objects.genai.enabled_in_config for c in self.config.cameras.values()
-        ):
+        if any(c.objects.genai.enabled_in_config for c in self.config.cameras.values()):
             self.post_processors.append(
                 ObjectDescriptionProcessor(
                     self.config,
                     self.embeddings,
                     self.requestor,
                     self.metrics,
-                    self.genai_manager.vision_client,
+                    self.genai_manager,
                     semantic_trigger_processor,
                 )
             )
@@ -705,4 +701,7 @@ class EmbeddingMaintainer(threading.Thread):
         if not self.config.semantic_search.enabled:
             return
 
-        self.embeddings.embed_thumbnail(event_id, thumbnail)
+        try:
+            self.embeddings.embed_thumbnail(event_id, thumbnail)
+        except ValueError:
+            logger.warning(f"Failed to embed thumbnail for event {event_id}")

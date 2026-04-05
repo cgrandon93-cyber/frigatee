@@ -3,13 +3,35 @@ import type { SectionConfigOverrides } from "./types";
 const lpr: SectionConfigOverrides = {
   base: {
     sectionDocs: "/configuration/license_plate_recognition",
+    messages: [
+      {
+        key: "global-disabled",
+        messageKey: "configMessages.lpr.globalDisabled",
+        severity: "warning",
+        condition: (ctx) => {
+          if (ctx.level !== "camera") return false;
+          return ctx.fullConfig.lpr?.enabled === false;
+        },
+      },
+      {
+        key: "vehicle-not-tracked",
+        messageKey: "configMessages.lpr.vehicleNotTracked",
+        severity: "info",
+        condition: (ctx) => {
+          if (ctx.level !== "camera" || !ctx.fullCameraConfig) return false;
+          if (ctx.fullCameraConfig.type === "lpr") return false;
+          const tracked = ctx.fullCameraConfig.objects?.track ?? [];
+          return !tracked.some((o) => ["car", "motorcycle"].includes(o));
+        },
+      },
+    ],
     fieldDocs: {
       enhancement: "/configuration/license_plate_recognition#enhancement",
     },
     restartRequired: [],
-    fieldOrder: ["enabled", "expire_time", "min_area", "enhancement"],
+    fieldOrder: ["enabled", "min_area", "enhancement", "expire_time"],
     hiddenFields: [],
-    advancedFields: ["expire_time", "min_area", "enhancement"],
+    advancedFields: ["expire_time", "enhancement"],
     overrideFields: ["enabled", "min_area", "enhancement"],
   },
   global: {

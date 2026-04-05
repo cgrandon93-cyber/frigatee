@@ -5,7 +5,7 @@ import importlib
 import logging
 import os
 import re
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 import numpy as np
 from playhouse.shortcuts import model_to_dict
@@ -31,10 +31,10 @@ __all__ = [
 PROVIDERS = {}
 
 
-def register_genai_provider(key: GenAIProviderEnum):
+def register_genai_provider(key: GenAIProviderEnum) -> Callable:
     """Register a GenAI provider."""
 
-    def decorator(cls):
+    def decorator(cls: type) -> type:
         PROVIDERS[key] = cls
         return cls
 
@@ -106,7 +106,7 @@ When forming your description:
 ## Response Field Guidelines
 
 Respond with a JSON object matching the provided schema. Field-specific guidance:
-- `scene`: Describe how the sequence begins, then the progression of events — all significant movements and actions in order. For example, if a vehicle arrives and then a person exits, describe both sequentially. Your description should align with and support the threat level you assign.
+- `scene`: Describe how the sequence begins, then the progression of events — all significant movements and actions in order. For example, if a vehicle arrives and then a person exits, describe both sequentially. Always use subject names from "Objects in Scene" — do not replace named subjects with generic terms like "a person" or "the individual". Your description should align with and support the threat level you assign.
 - `title`: Characterize **what took place and where** — interpret the overall purpose or outcome, do not simply compress the scene description into fewer words. Include the relevant location (zone, area, or entry point). Always include subject names from "Objects in Scene" — do not replace named subjects with generic terms. No editorial qualifiers like "routine" or "suspicious."
 - `potential_threat_level`: Must be consistent with your scene description and the activity patterns above.
 {get_concern_prompt()}
@@ -120,9 +120,7 @@ Respond with a JSON object matching the provided schema. Field-specific guidance
 
 ## Objects in Scene
 
-Each line represents a detection state, not necessarily unique individuals. Parentheses indicate object type or category, use only the name/label in your response, not the parentheses.
-
-**CRITICAL: When you see both recognized and unrecognized entries of the same type (e.g., "Joe (person)" and "Person"), visually count how many distinct people/objects you actually see based on appearance and clothing. If you observe only ONE person throughout the sequence, use ONLY the recognized name (e.g., "Joe"). The same person may be recognized in some frames but not others. Only describe both if you visually see MULTIPLE distinct people with clearly different appearances.**
+Each line represents a detection state, not necessarily unique individuals. The `←` symbol separates a recognized subject's name from their object type — use only the name (before the `←`) in your response, not the type after it. The same subject may appear across multiple lines if detected multiple times.
 
 **Note: Unidentified objects (without names) are NOT indicators of suspicious activity—they simply mean the system hasn't identified that object.**
 {get_objects_list()}
@@ -152,6 +150,9 @@ Each line represents a detection state, not necessarily unique individuals. Pare
             schema.get("properties", {}).pop("other_concerns", None)
             if "other_concerns" in schema.get("required", []):
                 schema["required"].remove("other_concerns")
+
+        # OpenAI strict mode requires additionalProperties: false on all objects
+        schema["additionalProperties"] = False
 
         response_format = {
             "type": "json_schema",
@@ -185,8 +186,8 @@ Each line represents a detection state, not necessarily unique individuals. Pare
                 if metadata.confidence > 1.0:
                     metadata.confidence = min(metadata.confidence / 100.0, 1.0)
 
-                # If any verified objects (contain parentheses with name), set to 0
-                if any("(" in obj for obj in review_data["unified_objects"]):
+                # If any verified objects (contain ← separator), set to 0
+                if any("←" in obj for obj in review_data["unified_objects"]):
                     metadata.potential_threat_level = 0
 
                 metadata.time = review_data["start"]
@@ -296,7 +297,7 @@ Guidelines:
         """Generate a description for the frame."""
         try:
             prompt = camera_config.objects.genai.object_prompts.get(
-                event.label,
+                str(event.label),
                 camera_config.objects.genai.prompt,
             ).format(**model_to_dict(event))
         except KeyError as e:
@@ -306,7 +307,7 @@ Guidelines:
         logger.debug(f"Sending images to genai provider with prompt: {prompt}")
         return self._send(prompt, thumbnails)
 
-    def _init_provider(self):
+    def _init_provider(self) -> Any:
         """Initialize the client."""
         return None
 
@@ -318,6 +319,22 @@ Guidelines:
     ) -> Optional[str]:
         """Submit a request to the provider."""
         return None
+
+    @property
+    def supports_vision(self) -> bool:
+        """Whether the model supports vision/image input.
+
+        Defaults to True for cloud providers. Providers that can detect
+        capability at runtime (e.g. llama.cpp) should override this.
+        """
+        return True
+
+    def list_models(self) -> list[str]:
+        """Return the list of model names available from this provider.
+
+        Providers should override this to query their backend.
+        """
+        return []
 
     def get_context_size(self) -> int:
         """Get the context window size for this provider in tokens."""
@@ -401,7 +418,7 @@ Guidelines:
         }
 
 
-def load_providers():
+def load_providers() -> None:
     package_dir = os.path.dirname(__file__)
     for filename in os.listdir(package_dir):
         if filename.endswith(".py") and filename != "__init__.py":

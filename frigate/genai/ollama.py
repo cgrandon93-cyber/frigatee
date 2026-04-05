@@ -2,7 +2,7 @@
 
 import json
 import logging
-from typing import Any, Optional
+from typing import Any, AsyncGenerator, Optional
 
 from httpx import RemoteProtocolError, TimeoutException
 from ollama import AsyncClient as OllamaAsyncClient
@@ -28,10 +28,10 @@ class OllamaClient(GenAIClient):
         },
     }
 
-    provider: ApiClient
+    provider: ApiClient | None
     provider_options: dict[str, Any]
 
-    def _init_provider(self):
+    def _init_provider(self) -> ApiClient | None:
         """Initialize the client."""
         self.provider_options = {
             **self.LOCAL_OPTIMIZED_OPTIONS,
@@ -53,6 +53,45 @@ class OllamaClient(GenAIClient):
             logger.warning("Error initializing Ollama: %s", str(e))
             return None
 
+    @staticmethod
+    def _clean_schema_for_ollama(schema: dict, *, _is_properties: bool = False) -> dict:
+        """Strip Pydantic metadata from a JSON schema for Ollama compatibility.
+
+        Ollama's grammar-based constrained generation works best with minimal
+        schemas. Pydantic adds title/description/constraint fields that can
+        cause the grammar generator to silently skip required fields.
+
+        Keys inside a ``properties`` dict are actual field names and must never
+        be stripped, even if they collide with a metadata key name (e.g. a
+        model field called ``title``).
+        """
+        STRIP_KEYS = {
+            "title",
+            "description",
+            "minimum",
+            "maximum",
+            "exclusiveMinimum",
+            "exclusiveMaximum",
+        }
+        result: dict[str, Any] = {}
+        for key, value in schema.items():
+            if not _is_properties and key in STRIP_KEYS:
+                continue
+            if isinstance(value, dict):
+                result[key] = OllamaClient._clean_schema_for_ollama(
+                    value, _is_properties=(key == "properties")
+                )
+            elif isinstance(value, list):
+                result[key] = [
+                    OllamaClient._clean_schema_for_ollama(item)
+                    if isinstance(item, dict)
+                    else item
+                    for item in value
+                ]
+            else:
+                result[key] = value
+        return result
+
     def _send(
         self,
         prompt: str,
@@ -73,7 +112,7 @@ class OllamaClient(GenAIClient):
             if response_format and response_format.get("type") == "json_schema":
                 schema = response_format.get("json_schema", {}).get("schema")
                 if schema:
-                    ollama_options["format"] = schema
+                    ollama_options["format"] = self._clean_schema_for_ollama(schema)
             result = self.provider.generate(
                 self.genai_config.model,
                 prompt,
@@ -83,7 +122,7 @@ class OllamaClient(GenAIClient):
             logger.debug(
                 f"Ollama tokens used: eval_count={result.get('eval_count')}, prompt_eval_count={result.get('prompt_eval_count')}"
             )
-            return result["response"].strip()
+            return str(result["response"]).strip()
         except (
             TimeoutException,
             ResponseError,
@@ -92,6 +131,19 @@ class OllamaClient(GenAIClient):
         ) as e:
             logger.warning("Ollama returned an error: %s", str(e))
             return None
+
+    def list_models(self) -> list[str]:
+        """Return available model names from the Ollama server."""
+        if self.provider is None:
+            return []
+        try:
+            response = self.provider.list()
+            return sorted(
+                m.get("name", m.get("model", "")) for m in response.get("models", [])
+            )
+        except Exception as e:
+            logger.warning("Failed to list Ollama models: %s", e)
+            return []
 
     def get_context_size(self) -> int:
         """Get the context window size for Ollama."""
@@ -224,7 +276,7 @@ class OllamaClient(GenAIClient):
         messages: list[dict[str, Any]],
         tools: Optional[list[dict[str, Any]]] = None,
         tool_choice: Optional[str] = "auto",
-    ):
+    ) -> AsyncGenerator[tuple[str, Any], None]:
         """Stream chat with tools; yields content deltas then final message.
 
         When tools are provided, Ollama streaming does not include tool_calls

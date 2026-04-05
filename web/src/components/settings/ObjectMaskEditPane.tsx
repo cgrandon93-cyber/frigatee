@@ -51,6 +51,7 @@ type ObjectMaskEditPaneProps = {
   onCancel?: () => void;
   snapPoints: boolean;
   setSnapPoints: React.Dispatch<React.SetStateAction<boolean>>;
+  editingProfile?: string | null;
 };
 
 export default function ObjectMaskEditPane({
@@ -65,6 +66,7 @@ export default function ObjectMaskEditPane({
   onCancel,
   snapPoints,
   setSnapPoints,
+  editingProfile,
 }: ObjectMaskEditPaneProps) {
   const { t } = useTranslation(["views/settings"]);
   const { data: config, mutate: updateConfig } =
@@ -78,9 +80,10 @@ export default function ObjectMaskEditPane({
     }
   }, [polygons, activePolygonIndex]);
 
+  const maskName = polygon?.name || "";
   const { send: sendObjectMaskState } = useObjectMaskState(
     polygon?.camera || "",
-    polygon?.name || "",
+    maskName,
   );
 
   const cameraConfig = useMemo(() => {
@@ -141,7 +144,7 @@ export default function ObjectMaskEditPane({
     }),
     enabled: z.boolean(),
     objects: z.string(),
-    isFinished: z.boolean().refine(() => polygon?.isFinished === true, {
+    isFinished: z.boolean().refine((val) => val === true, {
       message: t("masksAndZones.form.polygonDrawing.error.mustBeFinished"),
     }),
   });
@@ -157,6 +160,12 @@ export default function ObjectMaskEditPane({
       isFinished: polygon?.isFinished ?? false,
     },
   });
+
+  useEffect(() => {
+    if (polygon?.isFinished !== undefined) {
+      form.setValue("isFinished", polygon.isFinished, { shouldValidate: true });
+    }
+  }, [polygon?.isFinished, form]);
 
   const saveToConfig = useCallback(
     async ({
@@ -190,14 +199,22 @@ export default function ObjectMaskEditPane({
           // Determine if old mask was global or per-object
           const wasGlobal =
             polygon.objects.length === 0 || polygon.objects[0] === "all_labels";
-          const oldPath = wasGlobal
-            ? `cameras.${polygon.camera}.objects.mask.${polygon.name}`
-            : `cameras.${polygon.camera}.objects.filters.${polygon.objects[0]}.mask.${polygon.name}`;
+
+          let oldPath: string;
+          if (editingProfile) {
+            oldPath = wasGlobal
+              ? `cameras.${polygon.camera}.profiles.${editingProfile}.objects.mask.${polygon.name}`
+              : `cameras.${polygon.camera}.profiles.${editingProfile}.objects.filters.${polygon.objects[0]}.mask.${polygon.name}`;
+          } else {
+            oldPath = wasGlobal
+              ? `cameras.${polygon.camera}.objects.mask.${polygon.name}`
+              : `cameras.${polygon.camera}.objects.filters.${polygon.objects[0]}.mask.${polygon.name}`;
+          }
 
           await axios.put(`config/set?${oldPath}`, {
             requires_restart: 0,
           });
-        } catch (error) {
+        } catch {
           toast.error(t("toast.save.error.noMessage", { ns: "common" }), {
             position: "top-center",
           });
@@ -206,45 +223,32 @@ export default function ObjectMaskEditPane({
         }
       }
 
-      // Build the config structure based on whether it's global or per-object
-      let configBody;
-      if (globalMask) {
-        configBody = {
-          config_data: {
-            cameras: {
-              [polygon.camera]: {
-                objects: {
-                  mask: {
-                    [maskId]: maskConfig,
-                  },
-                },
-              },
+      // Build config path based on profile mode
+      const objectsSection = globalMask
+        ? { objects: { mask: { [maskId]: maskConfig } } }
+        : {
+            objects: {
+              filters: { [form_objects]: { mask: { [maskId]: maskConfig } } },
             },
+          };
+
+      const cameraData = editingProfile
+        ? { profiles: { [editingProfile]: objectsSection } }
+        : objectsSection;
+
+      const updateTopic = editingProfile
+        ? undefined
+        : `config/cameras/${polygon.camera}/objects`;
+
+      const configBody = {
+        config_data: {
+          cameras: {
+            [polygon.camera]: cameraData,
           },
-          requires_restart: 0,
-          update_topic: `config/cameras/${polygon.camera}/objects`,
-        };
-      } else {
-        configBody = {
-          config_data: {
-            cameras: {
-              [polygon.camera]: {
-                objects: {
-                  filters: {
-                    [form_objects]: {
-                      mask: {
-                        [maskId]: maskConfig,
-                      },
-                    },
-                  },
-                },
-              },
-            },
-          },
-          requires_restart: 0,
-          update_topic: `config/cameras/${polygon.camera}/objects`,
-        };
-      }
+        },
+        requires_restart: 0,
+        update_topic: updateTopic,
+      };
 
       axios
         .put("config/set", configBody)
@@ -259,8 +263,10 @@ export default function ObjectMaskEditPane({
               },
             );
             updateConfig();
-            // Publish the enabled state through websocket
-            sendObjectMaskState(enabled ? "ON" : "OFF");
+            // Only publish WS state for base config when mask has a name
+            if (!editingProfile && maskName) {
+              sendObjectMaskState(enabled ? "ON" : "OFF");
+            }
           } else {
             toast.error(
               t("toast.save.error.title", {
@@ -301,6 +307,8 @@ export default function ObjectMaskEditPane({
       cameraConfig,
       t,
       sendObjectMaskState,
+      maskName,
+      editingProfile,
     ],
   );
 
@@ -454,14 +462,14 @@ export default function ObjectMaskEditPane({
                 </Button>
                 <Button
                   variant="select"
-                  disabled={isLoading}
+                  disabled={isLoading || !form.formState.isValid}
                   className="flex flex-1"
                   aria-label={t("button.save", { ns: "common" })}
                   type="submit"
                 >
                   {isLoading ? (
                     <div className="flex flex-row items-center gap-2">
-                      <ActivityIndicator />
+                      <ActivityIndicator className="size-4" />
                       <span>{t("button.saving", { ns: "common" })}</span>
                     </div>
                   ) : (

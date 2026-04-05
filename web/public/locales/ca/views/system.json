@@ -59,7 +59,9 @@
       "count": "{{count}} missatges",
       "expanded": {
         "payload": "Payload"
-      }
+      },
+      "count_one": "{{count}} missatge",
+      "count_other": "{{count}} missatges"
     }
   },
   "general": {
@@ -110,7 +112,8 @@
         "description": "Aquest és un error conegut en les eines d'informació de les estadístiques de GPU d'Intel (intel.gpu.top) on es trencarà i retornarà repetidament un ús de GPU del 0% fins i tot en els casos en què l'acceleració del maquinari i la detecció d'objectes s'executen correctament a la (i)GPU. Això no és un error de Frigate. Podeu reiniciar l'amfitrió per a corregir temporalment el problema i confirmar que la GPU funciona correctament. Això no afecta el rendiment."
       },
       "gpuTemperature": "Temperatura de la GPU",
-      "npuTemperature": "Temperatura NPU"
+      "npuTemperature": "Temperatura NPU",
+      "gpuCompute": "Càlcul / Codificació per GPU"
     },
     "otherProcesses": {
       "title": "Altres processos",
@@ -147,7 +150,11 @@
     "overview": "Visió general",
     "shm": {
       "title": "Ubicació de SHM (memória compartida)",
-      "warning": "El tamany de la SHM oh {{total}}MB es massa petita. Augmenta almenys fins a {{min_shm}}MB."
+      "warning": "El tamany de la SHM oh {{total}}MB es massa petita. Augmenta almenys fins a {{min_shm}}MB.",
+      "frameLifetime": {
+        "title": "Temps de vida del fotograma",
+        "description": "Cada càmera té {{frames}} ranures de fotogrames en memòria compartida. A la velocitat de fotogrames més ràpida de la càmera, cada fotograma està disponible per aproximadament {{lifetime}}s abans de ser sobreescrit."
+      }
     }
   },
   "cameras": {
@@ -166,7 +173,8 @@
       "cameraFramesPerSecond": "{{camName}} fotogrames per segon",
       "cameraDetectionsPerSecond": "{{camName}} deteccions per segon",
       "overallSkippedDetectionsPerSecond": "Nombre total de deteccions descartades per segon",
-      "cameraSkippedDetectionsPerSecond": "Nombre de deteccions descartades per segon a {{camName}}"
+      "cameraSkippedDetectionsPerSecond": "Nombre de deteccions descartades per segon a {{camName}}",
+      "cameraGpu": "{{camName}} GPU"
     },
     "info": {
       "codec": "Còdec:",

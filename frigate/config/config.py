@@ -12,7 +12,6 @@ from pydantic import (
     Field,
     TypeAdapter,
     ValidationInfo,
-    field_serializer,
     field_validator,
     model_validator,
 )
@@ -26,6 +25,7 @@ from frigate.plus import PlusApi
 from frigate.util.builtin import (
     deep_merge,
     get_ffmpeg_arg_list,
+    load_labels,
 )
 from frigate.util.config import (
     CURRENT_CONFIG_VERSION,
@@ -41,7 +41,7 @@ from frigate.util.services import auto_detect_hwaccel
 from .auth import AuthConfig
 from .base import FrigateBaseModel
 from .camera import CameraConfig, CameraLiveConfig
-from .camera.audio import AudioConfig
+from .camera.audio import AudioConfig, AudioFilterConfig
 from .camera.birdseye import BirdseyeConfig
 from .camera.detect import DetectConfig
 from .camera.ffmpeg import FfmpegConfig
@@ -68,6 +68,7 @@ from .env import EnvVars
 from .logger import LoggerConfig
 from .mqtt import MqttConfig
 from .network import NetworkingConfig
+from .profile import ProfileDefinitionConfig
 from .proxy import ProxyConfig
 from .telemetry import TelemetryConfig
 from .tls import TlsConfig
@@ -97,8 +98,7 @@ stream_info_retriever = StreamInfoRetriever()
 class RuntimeMotionConfig(MotionConfig):
     """Runtime version of MotionConfig with rasterized masks."""
 
-    # The rasterized numpy mask (combination of all enabled masks)
-    rasterized_mask: np.ndarray = None
+    rasterized_mask: np.ndarray = Field(default=None, exclude=True)
 
     def __init__(self, **config):
         frame_shape = config.get("frame_shape", (1, 1))
@@ -144,24 +144,13 @@ class RuntimeMotionConfig(MotionConfig):
             empty_mask[:] = 255
             self.rasterized_mask = empty_mask
 
-    def dict(self, **kwargs):
-        ret = super().model_dump(**kwargs)
-        if "rasterized_mask" in ret:
-            ret.pop("rasterized_mask")
-        return ret
-
-    @field_serializer("rasterized_mask", when_used="json")
-    def serialize_rasterized_mask(self, value: Any, info):
-        return None
-
     model_config = ConfigDict(arbitrary_types_allowed=True, extra="ignore")
 
 
 class RuntimeFilterConfig(FilterConfig):
     """Runtime version of FilterConfig with rasterized masks."""
 
-    # The rasterized numpy mask (combination of all enabled masks)
-    rasterized_mask: Optional[np.ndarray] = None
+    rasterized_mask: Optional[np.ndarray] = Field(default=None, exclude=True)
 
     def __init__(self, **config):
         frame_shape = config.get("frame_shape", (1, 1))
@@ -224,16 +213,6 @@ class RuntimeFilterConfig(FilterConfig):
             self.rasterized_mask = create_mask(frame_shape, enabled_coords)
         else:
             self.rasterized_mask = None
-
-    def dict(self, **kwargs):
-        ret = super().model_dump(**kwargs)
-        if "rasterized_mask" in ret:
-            ret.pop("rasterized_mask")
-        return ret
-
-    @field_serializer("rasterized_mask", when_used="json")
-    def serialize_rasterized_mask(self, value: Any, info):
-        return None
 
     model_config = ConfigDict(arbitrary_types_allowed=True, extra="ignore")
 
@@ -466,7 +445,7 @@ class FrigateConfig(FrigateBaseModel):
     # GenAI config (named provider configs: name -> GenAIConfig)
     genai: Dict[str, GenAIConfig] = Field(
         default_factory=dict,
-        title="Generative AI configuration (named providers).",
+        title="Generative AI configuration",
         description="Settings for integrated generative AI providers used to generate object descriptions and review summaries.",
     )
 
@@ -495,7 +474,7 @@ class FrigateConfig(FrigateBaseModel):
     live: CameraLiveConfig = Field(
         default_factory=CameraLiveConfig,
         title="Live playback",
-        description="Settings used by the Web UI to control live stream resolution and quality.",
+        description="Settings to control the jsmpeg live stream resolution and quality. This does not affect restreamed cameras that use go2rtc for live view.",
     )
     motion: Optional[MotionConfig] = Field(
         default=None,
@@ -520,7 +499,7 @@ class FrigateConfig(FrigateBaseModel):
     snapshots: SnapshotsConfig = Field(
         default_factory=SnapshotsConfig,
         title="Snapshots",
-        description="Settings for saved JPEG snapshots of tracked objects for all cameras; can be overridden per-camera.",
+        description="Settings for API-generated snapshots of tracked objects for all cameras; can be overridden per-camera.",
     )
     timestamp_style: TimestampStyleConfig = Field(
         default_factory=TimestampStyleConfig,
@@ -559,6 +538,19 @@ class FrigateConfig(FrigateBaseModel):
         default_factory=dict,
         title="Camera groups",
         description="Configuration for named camera groups used to organize cameras in the UI.",
+    )
+
+    profiles: Dict[str, ProfileDefinitionConfig] = Field(
+        default_factory=dict,
+        title="Profiles",
+        description="Named profile definitions with friendly names. Camera profiles must reference names defined here.",
+    )
+
+    active_profile: Optional[str] = Field(
+        default=None,
+        title="Active profile",
+        description="Currently active profile name. Runtime-only, not persisted in YAML.",
+        exclude=True,
     )
 
     _plus_api: PlusApi
@@ -621,6 +613,21 @@ class FrigateConfig(FrigateBaseModel):
         # auto detect hwaccel args
         if self.ffmpeg.hwaccel_args == "auto":
             self.ffmpeg.hwaccel_args = auto_detect_hwaccel()
+
+        # Populate global audio filters for all audio labels
+        all_audio_labels = {
+            label
+            for label in load_labels("/audio-labelmap.txt", prefill=521).values()
+            if label
+        }
+
+        if self.audio.filters is None:
+            self.audio.filters = {}
+
+        for key in sorted(all_audio_labels - self.audio.filters.keys()):
+            self.audio.filters[key] = AudioFilterConfig()
+
+        self.audio.filters = dict(sorted(self.audio.filters.items()))
 
         # Global config to propagate down to camera level
         global_config = self.model_dump(
@@ -757,7 +764,7 @@ class FrigateConfig(FrigateBaseModel):
                 )
 
             # Default min_initialized configuration
-            min_initialized = int(camera_config.detect.fps / 2)
+            min_initialized = max(int(camera_config.detect.fps / 2), 2)
             if camera_config.detect.min_initialized is None:
                 camera_config.detect.min_initialized = min_initialized
 
@@ -798,6 +805,16 @@ class FrigateConfig(FrigateBaseModel):
             )
             camera_config.review.genai.enabled_in_config = (
                 camera_config.review.genai.enabled
+            )
+
+            if camera_config.audio.filters is None:
+                camera_config.audio.filters = {}
+
+            for key in sorted(all_audio_labels - camera_config.audio.filters.keys()):
+                camera_config.audio.filters[key] = AudioFilterConfig()
+
+            camera_config.audio.filters = dict(
+                sorted(camera_config.audio.filters.items())
             )
 
             # Add default filters
@@ -910,6 +927,15 @@ class FrigateConfig(FrigateBaseModel):
             verify_objects_track(camera_config, labelmap_objects)
             verify_lpr_and_face(self, camera_config)
 
+        # Validate camera profiles reference top-level profile definitions
+        for cam_name, cam_config in self.cameras.items():
+            for profile_name in cam_config.profiles:
+                if profile_name not in self.profiles:
+                    raise ValueError(
+                        f"Camera '{cam_name}' references profile '{profile_name}' "
+                        f"which is not defined in the top-level 'profiles' section"
+                    )
+
         # set names on classification configs
         for name, config in self.classification.custom.items():
             config.name = name
@@ -932,11 +958,6 @@ class FrigateConfig(FrigateBaseModel):
                     raise ValueError(
                         f"Camera {camera.name} has audio transcription enabled, but audio detection is not enabled for this camera. Audio detection must be enabled for cameras with audio transcription when it is disabled globally."
                     )
-
-        if self.plus_api and not self.snapshots.clean_copy:
-            logger.warning(
-                "Frigate+ is configured but clean snapshots are not enabled, submissions to Frigate+ will not be possible./"
-            )
 
         # Validate auth roles against cameras
         camera_names = set(self.cameras.keys())

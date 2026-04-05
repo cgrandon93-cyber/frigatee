@@ -44,6 +44,7 @@ type MotionMaskEditPaneProps = {
   onCancel?: () => void;
   snapPoints: boolean;
   setSnapPoints: React.Dispatch<React.SetStateAction<boolean>>;
+  editingProfile?: string | null;
 };
 
 export default function MotionMaskEditPane({
@@ -58,6 +59,7 @@ export default function MotionMaskEditPane({
   onCancel,
   snapPoints,
   setSnapPoints,
+  editingProfile,
 }: MotionMaskEditPaneProps) {
   const { t } = useTranslation(["views/settings"]);
   const { getLocaleDocUrl } = useDocDomain();
@@ -72,9 +74,11 @@ export default function MotionMaskEditPane({
     }
   }, [polygons, activePolygonIndex]);
 
+  const maskCamera = polygon?.camera || "";
+  const maskName = polygon?.name || "";
   const { send: sendMotionMaskState } = useMotionMaskState(
-    polygon?.camera || "",
-    polygon?.name || "",
+    maskCamera,
+    maskName,
   );
 
   const cameraConfig = useMemo(() => {
@@ -152,7 +156,7 @@ export default function MotionMaskEditPane({
       message: t("masksAndZones.form.name.error.mustNotBeEmpty"),
     }),
     enabled: z.boolean(),
-    isFinished: z.boolean().refine(() => polygon?.isFinished === true, {
+    isFinished: z.boolean().refine((val) => val === true, {
       message: t("masksAndZones.form.polygonDrawing.error.mustBeFinished"),
     }),
   });
@@ -167,6 +171,12 @@ export default function MotionMaskEditPane({
       isFinished: polygon?.isFinished ?? false,
     },
   });
+
+  useEffect(() => {
+    if (polygon?.isFinished !== undefined) {
+      form.setValue("isFinished", polygon.isFinished, { shouldValidate: true });
+    }
+  }, [polygon?.isFinished, form]);
 
   const saveToConfig = useCallback(
     async ({
@@ -192,16 +202,28 @@ export default function MotionMaskEditPane({
         coordinates: coordinates,
       };
 
+      // Build config path based on profile mode
+      const motionMaskPath = editingProfile
+        ? {
+            profiles: {
+              [editingProfile]: {
+                motion: { mask: { [maskId]: maskConfig } },
+              },
+            },
+          }
+        : { motion: { mask: { [maskId]: maskConfig } } };
+
       // If renaming, we need to delete the old mask first
       if (renamingMask) {
+        const deleteQueryPath = editingProfile
+          ? `cameras.${polygon.camera}.profiles.${editingProfile}.motion.mask.${polygon.name}`
+          : `cameras.${polygon.camera}.motion.mask.${polygon.name}`;
+
         try {
-          await axios.put(
-            `config/set?cameras.${polygon.camera}.motion.mask.${polygon.name}`,
-            {
-              requires_restart: 0,
-            },
-          );
-        } catch (error) {
+          await axios.put(`config/set?${deleteQueryPath}`, {
+            requires_restart: 0,
+          });
+        } catch {
           toast.error(t("toast.save.error.noMessage", { ns: "common" }), {
             position: "top-center",
           });
@@ -210,22 +232,20 @@ export default function MotionMaskEditPane({
         }
       }
 
+      const updateTopic = editingProfile
+        ? undefined
+        : `config/cameras/${polygon.camera}/motion`;
+
       // Save the new/updated mask using JSON body
       axios
         .put("config/set", {
           config_data: {
             cameras: {
-              [polygon.camera]: {
-                motion: {
-                  mask: {
-                    [maskId]: maskConfig,
-                  },
-                },
-              },
+              [polygon.camera]: motionMaskPath,
             },
           },
           requires_restart: 0,
-          update_topic: `config/cameras/${polygon.camera}/motion`,
+          update_topic: updateTopic,
         })
         .then((res) => {
           if (res.status === 200) {
@@ -238,8 +258,10 @@ export default function MotionMaskEditPane({
               },
             );
             updateConfig();
-            // Publish the enabled state through websocket
-            sendMotionMaskState(enabled ? "ON" : "OFF");
+            // Only publish WS state for base config when mask has a name
+            if (!editingProfile && maskName) {
+              sendMotionMaskState(enabled ? "ON" : "OFF");
+            }
           } else {
             toast.error(
               t("toast.save.error.title", {
@@ -277,6 +299,8 @@ export default function MotionMaskEditPane({
       cameraConfig,
       t,
       sendMotionMaskState,
+      maskName,
+      editingProfile,
     ],
   );
 
@@ -434,13 +458,13 @@ export default function MotionMaskEditPane({
                 <Button
                   variant="select"
                   aria-label={t("button.save", { ns: "common" })}
-                  disabled={isLoading}
+                  disabled={isLoading || !form.formState.isValid}
                   className="flex flex-1"
                   type="submit"
                 >
                   {isLoading ? (
                     <div className="flex flex-row items-center gap-2">
-                      <ActivityIndicator />
+                      <ActivityIndicator className="size-4" />
                       <span>{t("button.saving", { ns: "common" })}</span>
                     </div>
                   ) : (

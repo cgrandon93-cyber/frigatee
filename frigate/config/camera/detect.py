@@ -1,6 +1,6 @@
 from typing import Optional
 
-from pydantic import Field
+from pydantic import Field, model_validator
 
 from ..base import FrigateBaseModel
 
@@ -49,8 +49,8 @@ class StationaryConfig(FrigateBaseModel):
 class DetectConfig(FrigateBaseModel):
     enabled: bool = Field(
         default=False,
-        title="Detection enabled",
-        description="Enable or disable object detection for all cameras; can be overridden per-camera. Detection must be enabled for object tracking to run.",
+        title="Enable object detection",
+        description="Enable or disable object detection for all cameras; can be overridden per-camera.",
     )
     height: Optional[int] = Field(
         default=None,
@@ -71,6 +71,7 @@ class DetectConfig(FrigateBaseModel):
         default=None,
         title="Minimum initialization frames",
         description="Number of consecutive detection hits required before creating a tracked object. Increase to reduce false initializations. Default value is fps divided by 2.",
+        ge=2,
     )
     max_disappeared: Optional[int] = Field(
         default=None,
@@ -87,3 +88,11 @@ class DetectConfig(FrigateBaseModel):
         title="Annotation offset",
         description="Milliseconds to shift detect annotations to better align timeline bounding boxes with recordings; can be positive or negative.",
     )
+
+    @model_validator(mode="after")
+    def validate_dimensions(self) -> "DetectConfig":
+        if (self.width is None) != (self.height is None):
+            raise ValueError(
+                "detect -> both width and height must be specified together, or both omitted"
+            )
+        return self

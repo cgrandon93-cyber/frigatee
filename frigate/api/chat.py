@@ -15,6 +15,7 @@ from pydantic import BaseModel
 from frigate.api.auth import (
     allow_any_authenticated,
     get_allowed_cameras_for_filter,
+    require_camera_access,
 )
 from frigate.api.defs.query.events_query_parameters import EventsQueryParams
 from frigate.api.defs.request.chat_body import ChatCompletionRequest
@@ -26,6 +27,11 @@ from frigate.api.defs.response.chat_response import (
 from frigate.api.defs.tags import Tags
 from frigate.api.event import events
 from frigate.genai.utils import build_assistant_message_for_conversation
+from frigate.jobs.vlm_watch import (
+    get_vlm_watch_job,
+    start_vlm_watch_job,
+    stop_vlm_watch_job,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -82,6 +88,16 @@ class ToolExecuteRequest(BaseModel):
     arguments: Dict[str, Any]
 
 
+class VLMMonitorRequest(BaseModel):
+    """Request model for starting a VLM watch job."""
+
+    camera: str
+    condition: str
+    max_duration_minutes: int = 60
+    labels: List[str] = []
+    zones: List[str] = []
+
+
 def get_tool_definitions() -> List[Dict[str, Any]]:
     """
     Get OpenAI-compatible tool definitions for Frigate.
@@ -95,9 +111,11 @@ def get_tool_definitions() -> List[Dict[str, Any]]:
             "function": {
                 "name": "search_objects",
                 "description": (
-                    "Search for detected objects in Frigate by camera, object label, time range, "
-                    "zones, and other filters. Use this to answer questions about when "
-                    "objects were detected, what objects appeared, or to find specific object detections. "
+                    "Search the historical record of detected objects in Frigate. "
+                    "Use this ONLY for questions about the PAST — e.g. 'did anyone come by today?', "
+                    "'when was the last car?', 'show me detections from yesterday'. "
+                    "Do NOT use this for monitoring or alerting requests about future events — "
+                    "use start_camera_watch instead for those. "
                     "An 'object' in Frigate represents a tracked detection (e.g., a person, package, car). "
                     "When the user asks about a specific name (person, delivery company, animal, etc.), "
                     "filter by sub_label only and do not set label."
@@ -143,12 +161,67 @@ def get_tool_definitions() -> List[Dict[str, Any]]:
         {
             "type": "function",
             "function": {
+                "name": "set_camera_state",
+                "description": (
+                    "Change a camera's feature state (e.g., turn detection on/off, enable/disable recordings). "
+                    "Use camera='*' to apply to all cameras at once. "
+                    "Only call this tool when the user explicitly asks to change a camera setting. "
+                    "Requires admin privileges."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "camera": {
+                            "type": "string",
+                            "description": "Camera name to target, or '*' to target all cameras.",
+                        },
+                        "feature": {
+                            "type": "string",
+                            "enum": [
+                                "detect",
+                                "record",
+                                "snapshots",
+                                "audio",
+                                "motion",
+                                "enabled",
+                                "birdseye",
+                                "birdseye_mode",
+                                "improve_contrast",
+                                "ptz_autotracker",
+                                "motion_contour_area",
+                                "motion_threshold",
+                                "notifications",
+                                "audio_transcription",
+                                "review_alerts",
+                                "review_detections",
+                                "object_descriptions",
+                                "review_descriptions",
+                                "profile",
+                            ],
+                            "description": (
+                                "The feature to change. Most features accept ON or OFF. "
+                                "birdseye_mode accepts CONTINUOUS, MOTION, or OBJECTS. "
+                                "motion_contour_area and motion_threshold accept a number. "
+                                "profile accepts a profile name or 'none' to deactivate (requires camera='*')."
+                            ),
+                        },
+                        "value": {
+                            "type": "string",
+                            "description": "The value to set. ON or OFF for toggles, a number for thresholds, a profile name or 'none' for profile.",
+                        },
+                    },
+                    "required": ["camera", "feature", "value"],
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
                 "name": "get_live_context",
                 "description": (
-                    "Get the current detection information for a camera: objects being tracked, "
+                    "Get the current live image and detection information for a camera: objects being tracked, "
                     "zones, timestamps. Use this to understand what is visible in the live view. "
-                    "Call this when the user has included a live image (via include_live_image) or "
-                    "when answering questions about what is happening right now on a specific camera."
+                    "Call this when answering questions about what is happening right now on a specific camera."
                 ),
                 "parameters": {
                     "type": "object",
@@ -159,6 +232,119 @@ def get_tool_definitions() -> List[Dict[str, Any]]:
                         },
                     },
                     "required": ["camera"],
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "start_camera_watch",
+                "description": (
+                    "Start a continuous VLM watch job that monitors a camera and sends a notification "
+                    "when a specified condition is met. Use this when the user wants to be alerted about "
+                    "a future event, e.g. 'tell me when guests arrive' or 'notify me when the package is picked up'. "
+                    "Only one watch job can run at a time. Returns a job ID."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "camera": {
+                            "type": "string",
+                            "description": "Camera ID to monitor.",
+                        },
+                        "condition": {
+                            "type": "string",
+                            "description": (
+                                "Natural-language description of the condition to watch for, "
+                                "e.g. 'a person arrives at the front door'."
+                            ),
+                        },
+                        "max_duration_minutes": {
+                            "type": "integer",
+                            "description": "Maximum time to watch before giving up (minutes, default 60).",
+                            "default": 60,
+                        },
+                        "labels": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "Object labels that should trigger a VLM check (e.g. ['person', 'car']). If omitted, any detection on the camera triggers a check.",
+                        },
+                        "zones": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "Zone names to filter by. If specified, only detections in these zones trigger a VLM check.",
+                        },
+                    },
+                    "required": ["camera", "condition"],
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "stop_camera_watch",
+                "description": (
+                    "Cancel the currently running VLM watch job. Use this when the user wants to "
+                    "stop a previously started watch, e.g. 'stop watching the front door'."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {},
+                    "required": [],
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "get_profile_status",
+                "description": (
+                    "Get the current profile status including the active profile and "
+                    "timestamps of when each profile was last activated. Use this to "
+                    "determine time periods for recap requests — e.g. when the user asks "
+                    "'what happened while I was away?', call this first to find the relevant "
+                    "time window based on profile activation history."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {},
+                    "required": [],
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "get_recap",
+                "description": (
+                    "Get a recap of all activity (alerts and detections) for a given time period. "
+                    "Use this after calling get_profile_status to retrieve what happened during "
+                    "a specific window — e.g. 'what happened while I was away?'. Returns a "
+                    "chronological list of activity with camera, objects, zones, and GenAI-generated "
+                    "descriptions when available. Summarize the results for the user."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "after": {
+                            "type": "string",
+                            "description": "Start of the time period in ISO 8601 format (e.g. '2025-03-15T08:00:00').",
+                        },
+                        "before": {
+                            "type": "string",
+                            "description": "End of the time period in ISO 8601 format (e.g. '2025-03-15T17:00:00').",
+                        },
+                        "cameras": {
+                            "type": "string",
+                            "description": "Comma-separated camera IDs to include, or 'all' for all cameras. Default is 'all'.",
+                        },
+                        "severity": {
+                            "type": "string",
+                            "enum": ["alert", "detection"],
+                            "description": "Filter by severity level. Omit to include both alerts and detections.",
+                        },
+                    },
+                    "required": ["after", "before"],
                 },
             },
         },
@@ -255,6 +441,7 @@ async def _execute_search_objects(
     description="Execute a tool function call from an LLM.",
 )
 async def execute_tool(
+    request: Request,
     body: ToolExecuteRequest = Body(...),
     allowed_cameras: List[str] = Depends(get_allowed_cameras_for_filter),
 ) -> JSONResponse:
@@ -271,6 +458,12 @@ async def execute_tool(
 
     if tool_name == "search_objects":
         return await _execute_search_objects(arguments, allowed_cameras)
+
+    if tool_name == "set_camera_state":
+        result = await _execute_set_camera_state(request, arguments)
+        return JSONResponse(
+            content=result, status_code=200 if result.get("success") else 400
+        )
 
     return JSONResponse(
         content={
@@ -321,11 +514,22 @@ async def _execute_get_live_context(
                     "stationary": obj_dict.get("stationary", False),
                 }
 
-        return {
+        result: Dict[str, Any] = {
             "camera": camera,
             "timestamp": frame_time,
             "detections": list(tracked_objects_dict.values()),
         }
+
+        # Grab live frame when the chat model supports vision
+        image_url = await _get_live_frame_image_url(request, camera, allowed_cameras)
+        if image_url:
+            chat_client = request.app.genai_manager.chat_client
+            if chat_client is not None and chat_client.supports_vision:
+                # Pass image URL so it can be injected as a user message
+                # (images can't be in tool results)
+                result["_image_url"] = image_url
+
+        return result
 
     except Exception as e:
         logger.error(f"Error executing get_live_context: {e}", exc_info=True)
@@ -342,8 +546,8 @@ async def _get_live_frame_image_url(
     """
     Fetch the current live frame for a camera as a base64 data URL.
 
-    Returns None if the frame cannot be retrieved. Used when include_live_image
-    is set to attach the image to the first user message.
+    Returns None if the frame cannot be retrieved. Used by get_live_context
+    to attach the live image to the conversation.
     """
     if (
         camera not in allowed_cameras
@@ -358,12 +562,12 @@ async def _get_live_frame_image_url(
         if frame is None:
             return None
         height, width = frame.shape[:2]
-        max_dimension = 1024
-        if height > max_dimension or width > max_dimension:
-            scale = max_dimension / max(height, width)
+        target_height = 480
+        if height > target_height:
+            scale = target_height / height
             frame = cv2.resize(
                 frame,
-                (int(width * scale), int(height * scale)),
+                (int(width * scale), target_height),
                 interpolation=cv2.INTER_AREA,
             )
         _, img_encoded = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 85])
@@ -372,6 +576,46 @@ async def _get_live_frame_image_url(
     except Exception as e:
         logger.debug("Failed to get live frame for %s: %s", camera, e)
         return None
+
+
+async def _execute_set_camera_state(
+    request: Request,
+    arguments: Dict[str, Any],
+) -> Dict[str, Any]:
+    role = request.headers.get("remote-role", "")
+    if "admin" not in [r.strip() for r in role.split(",")]:
+        return {"error": "Admin privileges required to change camera settings."}
+
+    camera = arguments.get("camera", "").strip()
+    feature = arguments.get("feature", "").strip()
+    value = arguments.get("value", "").strip()
+
+    if not camera or not feature or not value:
+        return {"error": "camera, feature, and value are all required."}
+
+    dispatcher = request.app.dispatcher
+    frigate_config = request.app.frigate_config
+
+    if feature == "profile":
+        if camera != "*":
+            return {"error": "Profile feature requires camera='*'."}
+        dispatcher._receive("profile/set", value)
+        return {"success": True, "camera": camera, "feature": feature, "value": value}
+
+    if feature not in dispatcher._camera_settings_handlers:
+        return {"error": f"Unknown feature: {feature}"}
+
+    if camera == "*":
+        cameras = list(frigate_config.cameras.keys())
+    elif camera not in frigate_config.cameras:
+        return {"error": f"Camera '{camera}' not found."}
+    else:
+        cameras = [camera]
+
+    for cam in cameras:
+        dispatcher._receive(f"{cam}/{feature}/set", value)
+
+    return {"success": True, "camera": camera, "feature": feature, "value": value}
 
 
 async def _execute_tool_internal(
@@ -398,6 +642,8 @@ async def _execute_tool_internal(
         except (json.JSONDecodeError, AttributeError) as e:
             logger.warning(f"Failed to extract tool result: {e}")
             return {"error": "Failed to parse tool result"}
+    elif tool_name == "set_camera_state":
+        return await _execute_set_camera_state(request, arguments)
     elif tool_name == "get_live_context":
         camera = arguments.get("camera")
         if not camera:
@@ -408,26 +654,259 @@ async def _execute_tool_internal(
             )
             return {"error": "Camera parameter is required"}
         return await _execute_get_live_context(request, camera, allowed_cameras)
+    elif tool_name == "start_camera_watch":
+        return await _execute_start_camera_watch(request, arguments)
+    elif tool_name == "stop_camera_watch":
+        return _execute_stop_camera_watch()
+    elif tool_name == "get_profile_status":
+        return _execute_get_profile_status(request)
+    elif tool_name == "get_recap":
+        return _execute_get_recap(arguments, allowed_cameras)
     else:
         logger.error(
-            "Tool call failed: unknown tool %r. Expected one of: search_objects, get_live_context. "
-            "Arguments received: %s",
+            "Tool call failed: unknown tool %r. Expected one of: search_objects, get_live_context, "
+            "start_camera_watch, stop_camera_watch, get_profile_status, get_recap. Arguments received: %s",
             tool_name,
             json.dumps(arguments),
         )
         return {"error": f"Unknown tool: {tool_name}"}
 
 
+async def _execute_start_camera_watch(
+    request: Request,
+    arguments: Dict[str, Any],
+) -> Dict[str, Any]:
+    camera = arguments.get("camera", "").strip()
+    condition = arguments.get("condition", "").strip()
+    max_duration_minutes = int(arguments.get("max_duration_minutes", 60))
+    labels = arguments.get("labels") or []
+    zones = arguments.get("zones") or []
+
+    if not camera or not condition:
+        return {"error": "camera and condition are required."}
+
+    config = request.app.frigate_config
+    if camera not in config.cameras:
+        return {"error": f"Camera '{camera}' not found."}
+
+    await require_camera_access(camera, request=request)
+
+    genai_manager = request.app.genai_manager
+    chat_client = genai_manager.chat_client
+    if chat_client is None or not chat_client.supports_vision:
+        return {"error": "VLM watch requires a chat model with vision support."}
+
+    try:
+        job_id = start_vlm_watch_job(
+            camera=camera,
+            condition=condition,
+            max_duration_minutes=max_duration_minutes,
+            config=config,
+            frame_processor=request.app.detected_frames_processor,
+            genai_manager=genai_manager,
+            dispatcher=request.app.dispatcher,
+            labels=labels,
+            zones=zones,
+        )
+    except RuntimeError as e:
+        logger.error("Failed to start VLM watch job: %s", e, exc_info=True)
+        return {"error": "Failed to start VLM watch job."}
+
+    return {
+        "success": True,
+        "job_id": job_id,
+        "message": (
+            f"Now watching '{camera}' for: {condition}. "
+            f"You'll receive a notification when the condition is met (timeout: {max_duration_minutes} min)."
+        ),
+    }
+
+
+def _execute_stop_camera_watch() -> Dict[str, Any]:
+    cancelled = stop_vlm_watch_job()
+    if cancelled:
+        return {"success": True, "message": "Watch job cancelled."}
+    return {"success": False, "message": "No active watch job to cancel."}
+
+
+def _execute_get_profile_status(request: Request) -> Dict[str, Any]:
+    """Return profile status including active profile and activation timestamps."""
+    profile_manager = getattr(request.app, "profile_manager", None)
+    if profile_manager is None:
+        return {"error": "Profile manager is not available."}
+
+    info = profile_manager.get_profile_info()
+
+    # Convert timestamps to human-readable local times inline
+    last_activated = {}
+    for name, ts in info.get("last_activated", {}).items():
+        try:
+            dt = datetime.fromtimestamp(ts)
+            last_activated[name] = dt.strftime("%Y-%m-%d %I:%M:%S %p")
+        except (TypeError, ValueError, OSError):
+            last_activated[name] = str(ts)
+
+    return {
+        "active_profile": info.get("active_profile"),
+        "profiles": info.get("profiles", []),
+        "last_activated": last_activated,
+    }
+
+
+def _execute_get_recap(
+    arguments: Dict[str, Any],
+    allowed_cameras: List[str],
+) -> Dict[str, Any]:
+    """Fetch review segments with GenAI metadata for a time period."""
+    from functools import reduce
+
+    from peewee import operator
+
+    from frigate.models import ReviewSegment
+
+    after_str = arguments.get("after")
+    before_str = arguments.get("before")
+
+    def _parse_as_local_timestamp(s: str):
+        s = s.replace("Z", "").strip()[:19]
+        dt = datetime.strptime(s, "%Y-%m-%dT%H:%M:%S")
+        return time.mktime(dt.timetuple())
+
+    try:
+        after = _parse_as_local_timestamp(after_str)
+    except (ValueError, AttributeError, TypeError):
+        return {"error": f"Invalid 'after' timestamp: {after_str}"}
+
+    try:
+        before = _parse_as_local_timestamp(before_str)
+    except (ValueError, AttributeError, TypeError):
+        return {"error": f"Invalid 'before' timestamp: {before_str}"}
+
+    cameras = arguments.get("cameras", "all")
+    if cameras != "all":
+        requested = set(cameras.split(","))
+        camera_list = list(requested.intersection(allowed_cameras))
+        if not camera_list:
+            return {"events": [], "message": "No accessible cameras matched."}
+    else:
+        camera_list = allowed_cameras
+
+    clauses = [
+        (ReviewSegment.start_time < before)
+        & ((ReviewSegment.end_time.is_null(True)) | (ReviewSegment.end_time > after)),
+        (ReviewSegment.camera << camera_list),
+    ]
+
+    severity_filter = arguments.get("severity")
+    if severity_filter:
+        clauses.append(ReviewSegment.severity == severity_filter)
+
+    try:
+        rows = (
+            ReviewSegment.select(
+                ReviewSegment.camera,
+                ReviewSegment.start_time,
+                ReviewSegment.end_time,
+                ReviewSegment.severity,
+                ReviewSegment.data,
+            )
+            .where(reduce(operator.and_, clauses))
+            .order_by(ReviewSegment.start_time.asc())
+            .limit(100)
+            .dicts()
+            .iterator()
+        )
+
+        events: List[Dict[str, Any]] = []
+
+        for row in rows:
+            data = row.get("data") or {}
+            if isinstance(data, str):
+                try:
+                    data = json.loads(data)
+                except json.JSONDecodeError:
+                    data = {}
+
+            camera = row["camera"]
+            event: Dict[str, Any] = {
+                "camera": camera.replace("_", " ").title(),
+                "severity": row.get("severity", "detection"),
+            }
+
+            # Include GenAI metadata when available
+            metadata = data.get("metadata")
+            if metadata and isinstance(metadata, dict):
+                if metadata.get("title"):
+                    event["title"] = metadata["title"]
+                if metadata.get("scene"):
+                    event["description"] = metadata["scene"]
+                threat = metadata.get("potential_threat_level")
+                if threat is not None:
+                    threat_labels = {
+                        0: "normal",
+                        1: "needs_review",
+                        2: "security_concern",
+                    }
+                    event["threat_level"] = threat_labels.get(threat, str(threat))
+
+            # Only include objects/zones/audio when there's no GenAI description
+            # to keep the payload concise — the description already covers these
+            if "description" not in event:
+                objects = data.get("objects", [])
+                if objects:
+                    event["objects"] = objects
+                zones = data.get("zones", [])
+                if zones:
+                    event["zones"] = zones
+                audio = data.get("audio", [])
+                if audio:
+                    event["audio"] = audio
+
+            start_ts = row.get("start_time")
+            end_ts = row.get("end_time")
+            if start_ts is not None:
+                try:
+                    event["time"] = datetime.fromtimestamp(start_ts).strftime(
+                        "%I:%M %p"
+                    )
+                except (TypeError, ValueError, OSError):
+                    pass
+            if end_ts is not None and start_ts is not None:
+                try:
+                    event["duration_seconds"] = round(end_ts - start_ts)
+                except (TypeError, ValueError):
+                    pass
+
+            events.append(event)
+
+        if not events:
+            return {
+                "events": [],
+                "message": "No activity was found during this time period.",
+            }
+
+        return {"events": events}
+    except Exception as e:
+        logger.error("Error executing get_recap: %s", e, exc_info=True)
+        return {"error": "Failed to fetch recap data."}
+
+
 async def _execute_pending_tools(
     pending_tool_calls: List[Dict[str, Any]],
     request: Request,
     allowed_cameras: List[str],
-) -> tuple[List[ToolCall], List[Dict[str, Any]]]:
+) -> tuple[List[ToolCall], List[Dict[str, Any]], List[Dict[str, Any]]]:
     """
-    Execute a list of tool calls; return (ToolCall list for API response, tool result dicts for conversation).
+    Execute a list of tool calls.
+
+    Returns:
+        (ToolCall list for API response,
+         tool result dicts for conversation,
+         extra messages to inject after tool results — e.g. user messages with images)
     """
     tool_calls_out: List[ToolCall] = []
     tool_results: List[Dict[str, Any]] = []
+    extra_messages: List[Dict[str, Any]] = []
     for tool_call in pending_tool_calls:
         tool_name = tool_call["name"]
         tool_args = tool_call.get("arguments") or {}
@@ -464,6 +943,27 @@ async def _execute_pending_tools(
                     for evt in tool_result
                     if isinstance(evt, dict)
                 ]
+
+            # Extract _image_url from get_live_context results — images can
+            # only be sent in user messages, not tool results
+            if isinstance(tool_result, dict) and "_image_url" in tool_result:
+                image_url = tool_result.pop("_image_url")
+                extra_messages.append(
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": f"Here is the current live image from camera '{tool_result.get('camera', 'unknown')}'.",
+                            },
+                            {
+                                "type": "image_url",
+                                "image_url": {"url": image_url},
+                            },
+                        ],
+                    }
+                )
+
             result_content = (
                 json.dumps(tool_result)
                 if isinstance(tool_result, (dict, list))
@@ -499,7 +999,7 @@ async def _execute_pending_tools(
                     "content": error_content,
                 }
             )
-    return (tool_calls_out, tool_results)
+    return (tool_calls_out, tool_results, extra_messages)
 
 
 @router.post(
@@ -528,7 +1028,7 @@ async def chat_completion(
     6. Repeats until final answer
     7. Returns response to user
     """
-    genai_client = request.app.genai_manager.tool_client
+    genai_client = request.app.genai_manager.chat_client
     if not genai_client:
         return JSONResponse(
             content={
@@ -555,7 +1055,13 @@ async def chat_completion(
             if camera_config.friendly_name
             else camera_id.replace("_", " ").title()
         )
-        cameras_info.append(f"  - {friendly_name} (ID: {camera_id})")
+        zone_names = list(camera_config.zones.keys())
+        if zone_names:
+            cameras_info.append(
+                f"  - {friendly_name} (ID: {camera_id}, zones: {', '.join(zone_names)})"
+            )
+        else:
+            cameras_info.append(f"  - {friendly_name} (ID: {camera_id})")
 
     cameras_section = ""
     if cameras_info:
@@ -563,14 +1069,6 @@ async def chat_completion(
             "\n\nAvailable cameras:\n"
             + "\n".join(cameras_info)
             + "\n\nWhen users refer to cameras by their friendly name (e.g., 'Back Deck Camera'), use the corresponding camera ID (e.g., 'back_deck_cam') in tool calls."
-        )
-
-    live_image_note = ""
-    if body.include_live_image:
-        live_image_note = (
-            f"\n\nThe first user message includes a live image from camera "
-            f"'{body.include_live_image}'. Use get_live_context for that camera to get "
-            "current detection details (objects, zones) to aid in understanding the image."
         )
 
     system_prompt = f"""You are a helpful assistant for Frigate, a security camera NVR system. You help users answer questions about their cameras, detected objects, and events.
@@ -582,7 +1080,7 @@ Do not start your response with phrases like "I will check...", "Let me see...",
 Always present times to the user in the server's local timezone. When tool results include start_time_local and end_time_local, use those exact strings when listing or describing detection times—do not convert or invent timestamps. Do not use UTC or ISO format with Z for the user-facing answer unless the tool result only provides Unix timestamps without local time fields.
 When users ask about "today", "yesterday", "this week", etc., use the current date above as reference.
 When searching for objects or events, use ISO 8601 format for dates (e.g., {current_date_str}T00:00:00Z for the start of today).
-Always be accurate with time calculations based on the current date provided.{cameras_section}{live_image_note}"""
+Always be accurate with time calculations based on the current date provided.{cameras_section}"""
 
     conversation.append(
         {
@@ -591,7 +1089,6 @@ Always be accurate with time calculations based on the current date provided.{ca
         }
     )
 
-    first_user_message_seen = False
     for msg in body.messages:
         msg_dict = {
             "role": msg.role,
@@ -601,21 +1098,6 @@ Always be accurate with time calculations based on the current date provided.{ca
             msg_dict["tool_call_id"] = msg.tool_call_id
         if msg.name:
             msg_dict["name"] = msg.name
-
-        if (
-            msg.role == "user"
-            and not first_user_message_seen
-            and body.include_live_image
-        ):
-            first_user_message_seen = True
-            image_url = await _get_live_frame_image_url(
-                request, body.include_live_image, allowed_cameras
-            )
-            if image_url:
-                msg_dict["content"] = [
-                    {"type": "text", "text": msg.content},
-                    {"type": "image_url", "image_url": {"url": image_url}},
-                ]
 
         conversation.append(msg_dict)
 
@@ -674,11 +1156,16 @@ Always be accurate with time calculations based on the current date provided.{ca
                                     msg.get("content"), pending
                                 )
                             )
-                            executed_calls, tool_results = await _execute_pending_tools(
+                            (
+                                executed_calls,
+                                tool_results,
+                                extra_msgs,
+                            ) = await _execute_pending_tools(
                                 pending, request, allowed_cameras
                             )
                             stream_tool_calls.extend(executed_calls)
                             conversation.extend(tool_results)
+                            conversation.extend(extra_msgs)
                             yield (
                                 json.dumps(
                                     {
@@ -785,11 +1272,12 @@ Always be accurate with time calculations based on the current date provided.{ca
                 f"Tool calls detected (iteration {tool_iterations}/{max_iterations}): "
                 f"{len(pending_tool_calls)} tool(s) to execute"
             )
-            executed_calls, tool_results = await _execute_pending_tools(
+            executed_calls, tool_results, extra_msgs = await _execute_pending_tools(
                 pending_tool_calls, request, allowed_cameras
             )
             tool_calls.extend(executed_calls)
             conversation.extend(tool_results)
+            conversation.extend(extra_msgs)
             logger.debug(
                 f"Added {len(tool_results)} tool result(s) to conversation. "
                 f"Continuing with next LLM call..."
@@ -819,3 +1307,97 @@ Always be accurate with time calculations based on the current date provided.{ca
             },
             status_code=500,
         )
+
+
+# ---------------------------------------------------------------------------
+# VLM Monitor endpoints
+# ---------------------------------------------------------------------------
+
+
+@router.post(
+    "/vlm/monitor",
+    dependencies=[Depends(allow_any_authenticated())],
+    summary="Start a VLM watch job",
+    description=(
+        "Start monitoring a camera with the vision provider. "
+        "The VLM analyzes live frames until the specified condition is met, "
+        "then sends a notification. Only one watch job can run at a time."
+    ),
+)
+async def start_vlm_monitor(
+    request: Request,
+    body: VLMMonitorRequest,
+) -> JSONResponse:
+    config = request.app.frigate_config
+    genai_manager = request.app.genai_manager
+
+    if body.camera not in config.cameras:
+        return JSONResponse(
+            content={"success": False, "message": f"Camera '{body.camera}' not found."},
+            status_code=404,
+        )
+
+    await require_camera_access(body.camera, request=request)
+
+    chat_client = genai_manager.chat_client
+    if chat_client is None or not chat_client.supports_vision:
+        return JSONResponse(
+            content={
+                "success": False,
+                "message": "VLM watch requires a chat model with vision support.",
+            },
+            status_code=400,
+        )
+
+    try:
+        job_id = start_vlm_watch_job(
+            camera=body.camera,
+            condition=body.condition,
+            max_duration_minutes=body.max_duration_minutes,
+            config=config,
+            frame_processor=request.app.detected_frames_processor,
+            genai_manager=genai_manager,
+            dispatcher=request.app.dispatcher,
+            labels=body.labels,
+            zones=body.zones,
+        )
+    except RuntimeError as e:
+        logger.error("Failed to start VLM watch job: %s", e, exc_info=True)
+        return JSONResponse(
+            content={"success": False, "message": "Failed to start VLM watch job."},
+            status_code=409,
+        )
+
+    return JSONResponse(
+        content={"success": True, "job_id": job_id},
+        status_code=201,
+    )
+
+
+@router.get(
+    "/vlm/monitor",
+    dependencies=[Depends(allow_any_authenticated())],
+    summary="Get current VLM watch job",
+    description="Returns the current (or most recently completed) VLM watch job.",
+)
+async def get_vlm_monitor() -> JSONResponse:
+    job = get_vlm_watch_job()
+    if job is None:
+        return JSONResponse(content={"active": False}, status_code=200)
+    return JSONResponse(content={"active": True, **job.to_dict()}, status_code=200)
+
+
+@router.delete(
+    "/vlm/monitor",
+    dependencies=[Depends(allow_any_authenticated())],
+    summary="Cancel the current VLM watch job",
+    description="Cancels the running watch job if one exists.",
+)
+async def cancel_vlm_monitor() -> JSONResponse:
+    cancelled = stop_vlm_watch_job()
+    if not cancelled:
+        return JSONResponse(
+            content={"success": False, "message": "No active watch job to cancel."},
+            status_code=404,
+        )
+    return JSONResponse(content={"success": True}, status_code=200)

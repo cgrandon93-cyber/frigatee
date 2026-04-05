@@ -1,5 +1,7 @@
 {
-  "deleteExport": "Export löschen",
+  "deleteExport": {
+    "label": "Export löschen"
+  },
   "editExport": {
     "title": "Export umbenennen",
     "desc": "Gib einen neuen Namen für diesen Export an.",
@@ -24,7 +26,7 @@
   },
   "headings": {
     "cases": "Fälle",
-    "uncategorizedExports": "Unkategorisierte Exporte"
+    "uncategorizedExports": "Nicht kategorisierte Exporte"
   },
   "caseDialog": {
     "title": "Zum Fall hinzufügen",

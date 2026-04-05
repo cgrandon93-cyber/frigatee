@@ -7,7 +7,8 @@
     "logs": {
       "frigate": "Journaux de Frigate - Frigate",
       "nginx": "Journaux Nginx - Frigate",
-      "go2rtc": "Journaux Go2RTC - Frigate"
+      "go2rtc": "Journaux Go2RTC - Frigate",
+      "websocket": "Journaux des messages - Frigate"
     }
   },
   "title": "Système",
@@ -32,6 +33,33 @@
       "error": {
         "fetchingLogsFailed": "Erreur lors de la récupération des logs : {{errorMessage}}",
         "whileStreamingLogs": "Erreur lors de la diffusion des logs : {{errorMessage}}"
+      }
+    },
+    "websocket": {
+      "label": "Messages",
+      "pause": "Pause",
+      "resume": "Reprendre",
+      "clear": "Effacer",
+      "filter": {
+        "all": "Tous les sujets",
+        "topics": "Sujets",
+        "events": "Évènements",
+        "reviews": "Revues",
+        "classification": "Classification",
+        "face_recognition": "Reconnaissance Faciale",
+        "lpr": "LAPI",
+        "camera_activity": "Activités de la caméra",
+        "system": "Système",
+        "camera": "Caméra",
+        "all_cameras": "Toutes les caméras",
+        "cameras_count_one": "{{count}} Caméra",
+        "cameras_count_other": "{{count}} Caméras"
+      },
+      "empty": "Aucun message capturé jusque là",
+      "count_one": "{{count}} message",
+      "count_other": "{{count}} messages",
+      "expanded": {
+        "payload": "Charge utile"
       }
     }
   },

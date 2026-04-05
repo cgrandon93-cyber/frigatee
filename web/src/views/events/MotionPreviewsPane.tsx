@@ -9,6 +9,7 @@ import {
   useState,
 } from "react";
 import { isCurrentHour } from "@/utils/dateUtil";
+import { isFirefox, isMobile, isSafari } from "react-device-detect";
 import { useTranslation } from "react-i18next";
 import { CameraConfig } from "@/types/frigateConfig";
 import useSWR from "swr";
@@ -18,7 +19,7 @@ import { useResizeObserver } from "@/hooks/resize-observer";
 import { Skeleton } from "@/components/ui/skeleton";
 import ActivityIndicator from "@/components/indicators/activity-indicator";
 import TimeAgo from "@/components/dynamic/TimeAgo";
-import { useFormattedTimestamp } from "@/hooks/use-date-utils";
+import { useFormattedTimestamp, use24HourTime } from "@/hooks/use-date-utils";
 import { FrigateConfig } from "@/types/frigateConfig";
 
 const MOTION_HEATMAP_GRID_SIZE = 16;
@@ -164,9 +165,10 @@ function MotionPreviewClip({
   const [fallbackFrameIndex, setFallbackFrameIndex] = useState(0);
   const [fallbackFramesReady, setFallbackFramesReady] = useState(false);
 
+  const is24Hour = use24HourTime(config);
   const formattedDate = useFormattedTimestamp(
     range.start_time,
-    config?.ui.time_format == "24hour"
+    is24Hour
       ? t("time.formattedTimestampMonthDayHourMinute.24hour", {
           ns: "common",
         })
@@ -305,31 +307,46 @@ function MotionPreviewClip({
     );
   }, [clipStart, preview, range.end_time]);
 
+  const compatIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (compatIntervalRef.current) {
+        clearInterval(compatIntervalRef.current);
+      }
+    };
+  }, []);
+
   const resetPlayback = useCallback(() => {
     if (!videoRef.current || !preview) {
       return;
     }
 
+    if (compatIntervalRef.current) {
+      clearInterval(compatIntervalRef.current);
+      compatIntervalRef.current = null;
+    }
+
     videoRef.current.currentTime = clipStart;
-    videoRef.current.playbackRate = playbackRate;
-  }, [clipStart, playbackRate, preview]);
 
-  useEffect(() => {
-    if (!videoRef.current || !preview) {
-      return;
-    }
-
-    if (!isVisible) {
+    if (isSafari || (isFirefox && isMobile)) {
+      // Safari / iOS can't play at speeds > 2x, so manually step through frames
       videoRef.current.pause();
-      videoRef.current.currentTime = clipStart;
-      return;
-    }
+      compatIntervalRef.current = setInterval(() => {
+        if (!videoRef.current) {
+          return;
+        }
 
-    if (videoRef.current.readyState >= 2) {
-      resetPlayback();
-      void videoRef.current.play().catch(() => undefined);
+        videoRef.current.currentTime += 1;
+
+        if (videoRef.current.currentTime >= clipEnd) {
+          videoRef.current.currentTime = clipStart;
+        }
+      }, 1000 / playbackRate);
+    } else {
+      videoRef.current.playbackRate = playbackRate;
     }
-  }, [clipStart, isVisible, preview, resetPlayback]);
+  }, [clipStart, clipEnd, playbackRate, preview]);
 
   const drawDimOverlay = useCallback(() => {
     if (!dimOverlayCanvasRef.current) {
@@ -463,15 +480,17 @@ function MotionPreviewClip({
       {showLoadingIndicator && (
         <Skeleton className="absolute inset-0 z-10 rounded-lg md:rounded-2xl" />
       )}
-      {preview ? (
+      {preview && isVisible ? (
         <>
           <video
             ref={videoRef}
             className="size-full bg-black object-contain"
+            preload="auto"
+            autoPlay
             playsInline
-            preload={isVisible ? "metadata" : "none"}
             muted
-            autoPlay={isVisible}
+            disableRemotePlayback
+            loop
             onLoadedMetadata={() => {
               setVideoLoaded(true);
 
@@ -481,36 +500,21 @@ function MotionPreviewClip({
                   height: videoRef.current.videoHeight,
                 });
               }
-
-              if (!isVisible) {
-                return;
-              }
-
-              resetPlayback();
-
-              if (videoRef.current) {
-                void videoRef.current.play().catch(() => undefined);
-              }
             }}
             onCanPlay={() => {
               setVideoLoaded(true);
-
-              if (!isVisible) {
-                return;
-              }
-
-              if (videoRef.current) {
-                void videoRef.current.play().catch(() => undefined);
-              }
             }}
-            onPlay={() => setVideoPlaying(true)}
+            onPlay={() => {
+              setVideoPlaying(true);
+              resetPlayback();
+            }}
             onLoadedData={() => setVideoLoaded(true)}
             onError={() => {
               setVideoLoaded(true);
               setVideoPlaying(true);
             }}
             onTimeUpdate={() => {
-              if (!videoRef.current || !preview || !isVisible) {
+              if (!videoRef.current || !preview) {
                 return;
               }
 
@@ -519,12 +523,10 @@ function MotionPreviewClip({
               }
             }}
           >
-            {isVisible && (
-              <source
-                src={`${baseUrl}${preview.src.substring(1)}`}
-                type={preview.type}
-              />
-            )}
+            <source
+              src={`${baseUrl}${preview.src.substring(1)}`}
+              type={preview.type}
+            />
           </video>
           {motionHeatmap && (
             <canvas

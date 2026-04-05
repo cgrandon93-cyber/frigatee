@@ -12,7 +12,7 @@ import shlex
 import struct
 import urllib.parse
 from collections.abc import Mapping
-from multiprocessing.sharedctypes import Synchronized
+from multiprocessing.managers import ValueProxy
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple, Union
 
@@ -64,7 +64,7 @@ class EventsPerSecond:
 
 
 class InferenceSpeed:
-    def __init__(self, metric: Synchronized) -> None:
+    def __init__(self, metric: ValueProxy[float]) -> None:
         self.__metric = metric
         self.__initialized = False
 
@@ -116,7 +116,7 @@ def clean_camera_user_pass(line: str) -> str:
 def escape_special_characters(path: str) -> str:
     """Cleans reserved characters to encodings for ffmpeg."""
     if len(path) > 1000:
-        return ValueError("Input too long to check")
+        raise ValueError("Input too long to check")
 
     try:
         found = re.search(REGEX_RTSP_CAMERA_USER_PASS, path).group(0)[3:-1]

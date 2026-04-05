@@ -3,6 +3,17 @@ import type { SectionConfigOverrides } from "./types";
 const snapshots: SectionConfigOverrides = {
   base: {
     sectionDocs: "/configuration/snapshots",
+    messages: [
+      {
+        key: "detect-disabled",
+        messageKey: "configMessages.snapshots.detectDisabled",
+        severity: "info",
+        condition: (ctx) => {
+          if (ctx.level !== "camera" || !ctx.fullCameraConfig) return false;
+          return ctx.fullCameraConfig.detect?.enabled === false;
+        },
+      },
+    ],
     restartRequired: [],
     fieldOrder: [
       "enabled",
@@ -13,7 +24,7 @@ const snapshots: SectionConfigOverrides = {
       "retain",
     ],
     fieldGroups: {
-      display: ["enabled", "bounding_box", "crop", "quality", "timestamp"],
+      display: ["bounding_box", "crop", "quality", "timestamp"],
     },
     hiddenFields: ["enabled_in_config"],
     advancedFields: ["height", "quality", "retain"],

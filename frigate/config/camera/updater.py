@@ -18,16 +18,21 @@ class CameraConfigUpdateEnum(str, Enum):
     detect = "detect"
     enabled = "enabled"
     ffmpeg = "ffmpeg"
+    live = "live"
     motion = "motion"  # includes motion and motion masks
     notifications = "notifications"
     objects = "objects"
     object_genai = "object_genai"
+    onvif = "onvif"
     record = "record"
     remove = "remove"  # for removing a camera
     review = "review"
     review_genai = "review_genai"
     semantic_search = "semantic_search"  # for semantic search triggers
+    face_recognition = "face_recognition"
+    lpr = "lpr"
     snapshots = "snapshots"
+    timestamp_style = "timestamp_style"
     zones = "zones"
 
 
@@ -105,6 +110,8 @@ class CameraConfigUpdateSubscriber:
             config.enabled = updated_config
         elif update_type == CameraConfigUpdateEnum.object_genai:
             config.objects.genai = updated_config
+        elif update_type == CameraConfigUpdateEnum.live:
+            config.live = updated_config
         elif update_type == CameraConfigUpdateEnum.motion:
             config.motion = updated_config
         elif update_type == CameraConfigUpdateEnum.notifications:
@@ -119,8 +126,16 @@ class CameraConfigUpdateSubscriber:
             config.review.genai = updated_config
         elif update_type == CameraConfigUpdateEnum.semantic_search:
             config.semantic_search = updated_config
+        elif update_type == CameraConfigUpdateEnum.face_recognition:
+            config.face_recognition = updated_config
+        elif update_type == CameraConfigUpdateEnum.lpr:
+            config.lpr = updated_config
         elif update_type == CameraConfigUpdateEnum.snapshots:
             config.snapshots = updated_config
+        elif update_type == CameraConfigUpdateEnum.onvif:
+            config.onvif = updated_config
+        elif update_type == CameraConfigUpdateEnum.timestamp_style:
+            config.timestamp_style = updated_config
         elif update_type == CameraConfigUpdateEnum.zones:
             config.zones = updated_config
 
